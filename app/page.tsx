@@ -3,12 +3,14 @@
 import { useState, useEffect } from 'react'
 import { User } from '@/lib/types'
 import { storage } from '@/lib/storage'
+import LandingPage from '@/components/layout/landing-page'
 import LoginPage from '@/components/auth/login-page'
 import Dashboard from '@/components/dashboard/dashboard'
 
 export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [showLogin, setShowLogin] = useState(false)
 
   useEffect(() => {
     const user = storage.getCurrentUser()
@@ -27,9 +29,13 @@ export default function Home() {
     )
   }
 
-  if (!currentUser) {
+  if (currentUser) {
+    return <Dashboard currentUser={currentUser} onLogout={() => setCurrentUser(null)} />
+  }
+
+  if (showLogin) {
     return <LoginPage onLoginSuccess={setCurrentUser} />
   }
 
-  return <Dashboard currentUser={currentUser} onLogout={() => setCurrentUser(null)} />
+  return <LandingPage onGetStarted={() => setShowLogin(true)} />
 }

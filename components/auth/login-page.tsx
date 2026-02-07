@@ -61,12 +61,17 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   ]
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-white to-emerald-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-white to-emerald-50 flex items-center justify-center p-4 sm:p-6">
+      <div className="w-full max-w-md space-y-8">
         {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-primary mb-2">CityPulse</h1>
-          <p className="text-muted-foreground">Urban Incident Management System</p>
+        <div className="text-center space-y-3">
+          <div className="flex justify-center">
+            <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center">
+              <span className="text-2xl">🚨</span>
+            </div>
+          </div>
+          <h1 className="text-3xl sm:text-4xl font-bold text-foreground">CityPulse</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">Urban Incident Management System</p>
         </div>
 
         {/* Login Cards */}
@@ -74,9 +79,9 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
           {roles.map((role) => (
             <Card
               key={role.id}
-              className={`p-4 cursor-pointer transition-all border-2 ${
+              className={`p-4 sm:p-5 cursor-pointer transition-all border-2 hover:shadow-md ${
                 selectedRole === role.id
-                  ? 'border-primary bg-orange-50'
+                  ? 'border-primary bg-orange-50 shadow-lg'
                   : 'border-border hover:border-primary/50 bg-white'
               }`}
               onClick={() => setSelectedRole(role.id)}
@@ -94,20 +99,27 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
 
         {/* Login Button */}
         {selectedRole && (
-          <div className="mt-6">
+          <div className="space-y-3 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <Button
               onClick={() => handleLogin(roles.find((r) => r.id === selectedRole)?.email || '')}
               disabled={isLoading}
-              className="w-full bg-primary hover:bg-orange-600 text-white h-12 text-base font-semibold"
+              className="w-full bg-primary hover:bg-orange-600 text-white h-12 sm:h-14 text-base font-semibold transition-all"
             >
-              {isLoading ? 'Logging in...' : 'Continue'}
+              {isLoading ? (
+                <>
+                  <span className="animate-spin inline-block mr-2">⏳</span>
+                  Logging in...
+                </>
+              ) : (
+                'Continue'
+              )}
             </Button>
           </div>
         )}
 
         {/* Footer */}
-        <div className="mt-8 p-4 bg-emerald-50 rounded-lg border border-emerald-200">
-          <p className="text-xs text-muted-foreground text-center">
+        <div className="p-4 sm:p-5 bg-emerald-50 rounded-lg border border-emerald-200 text-center">
+          <p className="text-xs sm:text-sm text-muted-foreground">
             Demo mode. Select any role to explore the system.
           </p>
         </div>

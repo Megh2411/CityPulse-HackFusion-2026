@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import TicketCard from '@/components/tickets/ticket-card'
 import AuditTimeline from '@/components/tickets/audit-timeline'
+import OfficerTaskManager from '@/components/portals/officer-task-manager'
 import { Zap, AlertTriangle, Clock, CheckCircle, Users, Filter, Search } from 'lucide-react'
 
 interface OfficerDashboardProps {
@@ -63,6 +64,11 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
       }
       alert(`Ticket assigned to ${staffName}`)
     }
+  }
+
+  // Team Management view
+  if (currentView === 'team') {
+    return <OfficerTaskManager currentUser={currentUser} />
   }
 
   // Home view
