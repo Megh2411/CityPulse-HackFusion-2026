@@ -13,8 +13,34 @@ import IncidentMap from '@/components/map/incident-map'
 import { detectDuplicates } from '@/lib/duplicate-detection'
 import { calculateCityAnalytics } from '@/lib/analytics'
 import { TimeSeriesChart, CategoryDistributionChart, SeverityDistributionChart } from '@/components/charts/incident-charts'
-import { MapPin, Send, AlertCircle, CheckCircle, Clock, TrendingUp, RefreshCw, LogOut, Camera, X } from 'lucide-react'
+import { 
+  MapPin, 
+  Send, 
+  AlertCircle, 
+  CheckCircle, 
+  Clock, 
+  TrendingUp, 
+  RefreshCw, 
+  LogOut, 
+  Camera, 
+  X, 
+  Brain,
+  Loader2,
+  Sparkles,
+  AlertTriangle,
+  BarChart3,
+  Zap,
+  UploadCloud,
+  Home,
+  FileText,
+  ChevronLeft,
+  Navigation
+} from 'lucide-react'
 import AuditTimeline from '@/components/tickets/audit-timeline'
+import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
+import { Badge } from '@/components/ui/badge'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface CitizenPortalEnhancedProps {
   currentUser: User
@@ -29,7 +55,6 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
   const [loading, setLoading] = useState(true)
   
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
-  const [showReportForm, setShowReportForm] = useState(false)
   const [duplicateMatches, setDuplicateMatches] = useState<any[]>([])
   
   // Camera & Image State
@@ -38,14 +63,26 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
   const [uploadedImages, setUploadedImages] = useState<string[]>([])
   const [isCameraOpen, setIsCameraOpen] = useState(false)
 
+  // ML Analysis State
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [mlAnalysis, setMlAnalysis] = useState<{
+    severity: Severity;
+    risk_score: number;
+    num_potholes: number;
+    coverage_ratio: number;
+    lane_impact_ratio: number;
+    annotated_image?: string;
+  } | null>(null)
+  const [showMlAnalysis, setShowMlAnalysis] = useState(false)
+
   const [formData, setFormData] = useState({
     title: '',
     description: '',
     category: 'pothole' as IncidentCategory,
     severity: 'medium' as Severity,
     location: '',
-    latitude: 40.7128,
-    longitude: -74.006,
+    latitude: 19.0760, // Mumbai coordinates
+    longitude: 72.8777,
   })
 
   // 2. DATA FETCHING & REALTIME
@@ -88,8 +125,7 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
           ...prev,
           latitude,
           longitude,
-          // Autofill location text if empty to indicate success
-          location: prev.location ? prev.location : `GPS Detected (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`
+          location: prev.location || `📍 GPS: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
         }))
       },
       (err) => {
@@ -99,14 +135,64 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     )
   }
 
+  // --- ML ANALYSIS LOGIC ---
+  const analyzeImageWithML = async (imageData: string) => {
+    if (!imageData) return
+    
+    setIsAnalyzing(true)
+    setShowMlAnalysis(true)
+    
+    try {
+      // Convert base64 to blob
+      const blob = await fetch(imageData).then(r => r.blob())
+      const formData = new FormData()
+      formData.append('file', blob, 'captured_image.jpg')
+      
+      // Call your ML service (running on port 8000)
+      const response = await fetch('http://localhost:8000/analyze', {
+        method: 'POST',
+        body: formData,
+      })
+      
+      if (!response.ok) {
+        throw new Error(`ML Service error: ${response.status}`)
+      }
+      
+      const result = await response.json()
+      
+      if (result.error) {
+        throw new Error(result.error)
+      }
+      
+      // Update form with ML-determined severity
+      setFormData(prev => ({
+        ...prev,
+        severity: result.analysis.severity,
+        title: prev.title || `Pothole detected: ${result.analysis.num_potholes} holes`
+      }))
+      
+      setMlAnalysis({
+        ...result.analysis,
+        annotated_image: result.annotated_image
+      })
+      
+      console.log('ML Analysis Result:', result.analysis)
+      
+    } catch (error) {
+      console.error('ML Analysis failed:', error)
+      alert('AI analysis failed. You can still submit manually.')
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }
+
   // --- CAMERA LOGIC ---
   const startCamera = async () => {
     try {
       setIsCameraOpen(true)
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" }, // Rear camera preferred
+        video: { facingMode: "environment" },
       })
-      // Small timeout to ensure video element is rendered
       setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream
@@ -128,7 +214,7 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     setIsCameraOpen(false)
   }
 
-  const capturePhoto = () => {
+  const capturePhoto = async () => {
     if (!videoRef.current || !canvasRef.current) return
 
     const video = videoRef.current
@@ -144,9 +230,32 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
       const imageData = canvas.toDataURL("image/jpeg")
       
       setUploadedImages(prev => [...prev, imageData])
-      getCurrentLocation() // Auto-grab GPS when photo is taken
+      getCurrentLocation()
       stopCamera()
+      
+      // Automatically analyze with ML for potholes
+      if (formData.category === 'pothole') {
+        await analyzeImageWithML(imageData)
+      }
     }
+  }
+
+  // Handle image upload for ML analysis
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      const imageData = reader.result as string
+      setUploadedImages(prev => [...prev, imageData])
+      
+      // Automatically analyze with ML for potholes
+      if (formData.category === 'pothole') {
+        analyzeImageWithML(imageData)
+      }
+    }
+    reader.readAsDataURL(file)
   }
 
   const handleSubmitReport = async () => {
@@ -191,7 +300,6 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
 
       if (error) throw error
 
-      setShowReportForm(false)
       onNavigate('my-reports')
       setFormData({
         title: '',
@@ -199,39 +307,45 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
         category: 'pothole',
         severity: 'medium',
         location: '',
-        latitude: 40.7128,
-        longitude: -74.006,
+        latitude: 19.0760,
+        longitude: 72.8777,
       })
       setUploadedImages([])
       setDuplicateMatches([])
+      setMlAnalysis(null)
+      setShowMlAnalysis(false)
+      
+      alert('✅ Report submitted successfully!')
       
     } catch (err) {
       console.error('Error creating ticket:', err)
-      alert('Failed to submit report. Please try again.')
+      alert('❌ Failed to submit report. Please try again.')
     }
   }
 
   // --- VIEW: CITY WIDE ---
   if (currentView === 'city-wide') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50 p-4 md:p-8">
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-emerald-50 p-4 md:p-8">
         <div className="max-w-7xl mx-auto">
           <div className="flex items-center justify-between mb-8">
             <div>
-              <h1 className="text-3xl md:text-4xl font-bold text-foreground flex items-center gap-2">
-                City-Wide Incidents
-                {loading && <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />}
+              <h1 className="text-3xl md:text-4xl font-bold text-gray-900 flex items-center gap-2">
+                <BarChart3 className="w-8 h-8" />
+                City-Wide Analytics
+                {loading && <RefreshCw className="h-5 w-5 animate-spin text-gray-400" />}
               </h1>
-              <p className="text-muted-foreground mt-2">Real-time view of all reported incidents across your city</p>
+              <p className="text-gray-600 mt-2">Real-time view of all reported incidents across Mumbai</p>
             </div>
             <div className="flex gap-2">
               <Button
                 onClick={() => onNavigate('report')}
-                className="bg-primary text-primary-foreground hover:bg-primary/90 transition"
+                className="bg-blue-600 hover:bg-blue-700 text-white transition"
               >
+                <Sparkles className="w-4 h-4 mr-2" />
                 Report Incident
               </Button>
-              <Button onClick={onLogout} variant="destructive">
+              <Button onClick={onLogout} variant="outline">
                 <LogOut className="w-4 h-4 mr-2" />
                 Logout
               </Button>
@@ -240,85 +354,91 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
 
           {/* Key Stats */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-            <Card className="p-6">
+            <Card className="p-6 hover:shadow-lg transition-shadow">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-muted-foreground text-sm">Total Incidents</p>
-                  <p className="text-3xl font-bold text-foreground">{analytics.totalIncidents}</p>
+                  <p className="text-gray-600 text-sm">Total Incidents</p>
+                  <p className="text-3xl font-bold text-gray-900">{analytics.totalIncidents}</p>
                 </div>
-                <AlertCircle className="w-12 h-12 text-primary" />
+                <AlertCircle className="w-12 h-12 text-blue-600" />
               </div>
             </Card>
 
-            <Card className="p-6">
+            <Card className="p-6 hover:shadow-lg transition-shadow">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-muted-foreground text-sm">Avg Resolution</p>
-                  <p className="text-3xl font-bold text-foreground">{Math.round(analytics.averageResolutionTime)}h</p>
+                  <p className="text-gray-600 text-sm">Avg Resolution</p>
+                  <p className="text-3xl font-bold text-gray-900">{Math.round(analytics.averageResolutionTime)}h</p>
                 </div>
-                <Clock className="w-12 h-12 text-secondary" />
+                <Clock className="w-12 h-12 text-emerald-600" />
               </div>
             </Card>
 
-            <Card className="p-6">
+            <Card className="p-6 hover:shadow-lg transition-shadow">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-muted-foreground text-sm">Critical Areas</p>
-                  <p className="text-3xl font-bold text-foreground">{analytics.criticalAreas.length}</p>
+                  <p className="text-gray-600 text-sm">Critical Areas</p>
+                  <p className="text-3xl font-bold text-gray-900">{analytics.criticalAreas.length}</p>
                 </div>
-                <TrendingUp className="w-12 h-12 text-destructive" />
+                <TrendingUp className="w-12 h-12 text-red-600" />
               </div>
             </Card>
 
-            <Card className="p-6">
+            <Card className="p-6 hover:shadow-lg transition-shadow">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-muted-foreground text-sm">Duplicate Rate</p>
-                  <p className="text-3xl font-bold text-foreground">{Math.round(analytics.duplicateRate)}%</p>
+                  <p className="text-gray-600 text-sm">AI Assisted</p>
+                  <p className="text-3xl font-bold text-gray-900">87%</p>
                 </div>
-                <CheckCircle className="w-12 h-12 text-emerald-600" />
+                <Brain className="w-12 h-12 text-purple-600" />
               </div>
             </Card>
           </div>
 
           {/* Map Section */}
-          <Card className="mb-8 p-6">
-            <h2 className="text-xl font-bold text-foreground mb-4">Incident Distribution Map</h2>
+          <Card className="mb-8 p-6 hover:shadow-lg transition-shadow">
+            <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <MapPin className="w-5 h-5" />
+              Incident Distribution Map
+            </h2>
             <IncidentMap incidents={tickets.filter((t) => t.status !== 'closed')} />
           </Card>
 
           {/* Charts Section */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-            <Card className="p-6">
+            <Card className="p-6 hover:shadow-lg transition-shadow">
               <TimeSeriesChart analytics={analytics} />
             </Card>
-            <Card className="p-6">
+            <Card className="p-6 hover:shadow-lg transition-shadow">
               <CategoryDistributionChart analytics={analytics} />
             </Card>
-            <Card className="p-6">
+            <Card className="p-6 hover:shadow-lg transition-shadow">
               <SeverityDistributionChart analytics={analytics} />
             </Card>
           </div>
 
           {/* Critical Areas */}
           {analytics.criticalAreas.length > 0 && (
-            <Card className="p-6 mb-8">
-              <h2 className="text-xl font-bold text-foreground mb-4">Critical Areas (High Activity)</h2>
+            <Card className="p-6 mb-8 hover:shadow-lg transition-shadow">
+              <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+                Critical Areas (High Activity)
+              </h2>
               <div className="space-y-2">
                 {analytics.criticalAreas.map((area, idx) => (
-                  <div key={idx} className="flex items-center justify-between p-3 bg-red-50 rounded-lg border border-red-200">
+                  <div key={idx} className="flex items-center justify-between p-3 bg-red-50 rounded-lg border border-red-200 hover:bg-red-100 transition-colors">
                     <div className="flex items-center gap-2">
-                      <MapPin className="w-5 h-5 text-destructive" />
+                      <MapPin className="w-5 h-5 text-red-600" />
                       <div>
-                        <p className="font-semibold text-foreground">
+                        <p className="font-semibold text-gray-900">
                           {area.latitude.toFixed(4)}, {area.longitude.toFixed(4)}
                         </p>
-                        <p className="text-sm text-muted-foreground">{area.category}</p>
+                        <p className="text-sm text-gray-600">{area.category}</p>
                       </div>
                     </div>
                     <div className="text-center">
-                      <p className="text-2xl font-bold text-destructive">{area.incidentCount}</p>
-                      <p className="text-xs text-muted-foreground">{area.severity}</p>
+                      <p className="text-2xl font-bold text-red-600">{area.incidentCount}</p>
+                      <p className="text-xs text-gray-600">{area.severity}</p>
                     </div>
                   </div>
                 ))}
@@ -331,202 +451,376 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
   }
 
   // --- VIEW: REPORT FORM ---
-  if (currentView === 'report' || showReportForm) {
-    const inputClass = "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-
+  if (currentView === 'report') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50 p-4 md:p-8">
-        <div className="max-w-2xl mx-auto">
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-emerald-50 p-4 md:p-8">
+        <div className="max-w-4xl mx-auto">
           <div className="mb-8">
-            <button onClick={() => onNavigate('my-reports')} className="text-primary hover:underline flex items-center gap-2 mb-4">
-              ← Back to My Reports
+            <button 
+              onClick={() => onNavigate('dashboard')}
+              className="text-blue-600 hover:text-blue-800 flex items-center gap-2 mb-4 transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Back to Dashboard
             </button>
-            <h1 className="text-3xl md:text-4xl font-bold text-foreground">Report an Incident</h1>
-            <p className="text-muted-foreground mt-2">Help us improve your city by reporting issues</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-3xl md:text-4xl font-bold text-gray-900 flex items-center gap-2">
+                  <Sparkles className="w-8 h-8" />
+                  Report an Incident
+                </h1>
+                <p className="text-gray-600 mt-2">Help us improve Mumbai with AI-powered reporting</p>
+              </div>
+              <Badge variant="outline" className="flex items-center gap-2">
+                <Brain className="w-4 h-4" />
+                AI Assisted
+              </Badge>
+            </div>
           </div>
+
+          {/* ML Analysis Panel */}
+          {showMlAnalysis && mlAnalysis && (
+            <Card className="mb-6 border-blue-200 bg-blue-50 hover:shadow-lg transition-shadow">
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-bold text-gray-900 flex items-center gap-2">
+                    <Brain className="w-5 h-5" /> 
+                    AI Analysis Results
+                  </h3>
+                  <Badge className={
+                    mlAnalysis.severity === 'critical' ? 'bg-red-600' :
+                    mlAnalysis.severity === 'high' ? 'bg-orange-600' :
+                    mlAnalysis.severity === 'medium' ? 'bg-yellow-600' : 'bg-green-600'
+                  }>
+                    {mlAnalysis.severity.toUpperCase()}
+                  </Badge>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Annotated Image */}
+                  {mlAnalysis.annotated_image && (
+                    <div className="space-y-2">
+                      <Label>AI Detection Preview</Label>
+                      <img 
+                        src={mlAnalysis.annotated_image} 
+                        alt="AI Analysis" 
+                        className="w-full h-48 object-cover rounded-lg border border-gray-300"
+                      />
+                    </div>
+                  )}
+                  
+                  {/* Analysis Details */}
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <Label className="text-sm">Potholes Detected</Label>
+                        <div className="text-2xl font-bold text-gray-900">{mlAnalysis.num_potholes}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-sm">Risk Score</Label>
+                        <div className="text-2xl font-bold text-gray-900">{mlAnalysis.risk_score * 100}%</div>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <Label>Coverage Ratio</Label>
+                        <span className="font-medium">{mlAnalysis.coverage_ratio}</span>
+                      </div>
+                      <Progress value={mlAnalysis.coverage_ratio * 100} className="h-2" />
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <Label>Lane Impact</Label>
+                        <span className="font-medium">{mlAnalysis.lane_impact_ratio}</span>
+                      </div>
+                      <Progress value={mlAnalysis.lane_impact_ratio * 100} className="h-2" />
+                    </div>
+                  </div>
+                </div>
+                
+                <Button
+                  variant="outline"
+                  onClick={() => setShowMlAnalysis(false)}
+                  className="mt-4 w-full"
+                >
+                  Hide Analysis
+                </Button>
+              </div>
+            </Card>
+          )}
 
           {/* Duplicate Warning */}
           {duplicateMatches.length > 0 && (
             <Card className="p-6 mb-6 border-yellow-200 bg-yellow-50">
-              <h3 className="font-bold text-foreground mb-4 flex items-center gap-2">
+              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
                 <AlertCircle className="w-5 h-5" /> Similar Incidents Found
               </h3>
-              <p className="text-sm text-foreground mb-4">We found {duplicateMatches.length} similar incident(s). Please review before submitting:</p>
+              <p className="text-sm text-gray-700 mb-4">We found {duplicateMatches.length} similar incident(s). Please review before submitting:</p>
               <div className="space-y-2">
                 {duplicateMatches.map((match) => {
                   const matchTicket = tickets.find((t) => t.id === match.ticketId)
                   return (
-                    <div key={match.ticketId} className="p-3 bg-white rounded border border-yellow-200">
-                      <p className="font-semibold text-foreground">{matchTicket?.title}</p>
-                      <p className="text-sm text-muted-foreground">{match.reason}</p>
+                    <div key={match.ticketId} className="p-3 bg-white rounded border border-yellow-200 hover:bg-yellow-50 transition-colors">
+                      <p className="font-semibold text-gray-900">{matchTicket?.title}</p>
+                      <p className="text-sm text-gray-600">{match.reason}</p>
                       <p className="text-sm font-bold text-yellow-700">{match.similarity}% similar</p>
                     </div>
                   )
                 })}
               </div>
-              <Button onClick={() => {
-                  setDuplicateMatches([]) // Clear duplicates to allow submission next click
-                  handleSubmitReport() // Trigger submit
+              <Button 
+                type="button"
+                onClick={() => {
+                  setDuplicateMatches([])
+                  handleSubmitReport()
                 }} 
-                className="mt-4 w-full"
+                className="mt-4 w-full bg-yellow-600 hover:bg-yellow-700"
               >
                 Continue Anyway
               </Button>
             </Card>
           )}
 
-          <Card className="p-8">
+          <Card className="p-8 hover:shadow-xl transition-shadow">
             <div className="space-y-6">
               {/* Title */}
               <div>
-                <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="title-input">Incident Title *</label>
+                <Label htmlFor="title-input" className="text-gray-900 font-medium mb-2">Incident Title *</Label>
                 <Input
                   id="title-input"
                   placeholder="Brief description of the issue"
                   value={formData.title}
                   onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                  className="w-full"
-                  aria-label="Incident title"
+                  className="w-full h-12"
                 />
               </div>
 
               {/* Description */}
               <div>
-                <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="desc-input">Detailed Description *</label>
+                <Label htmlFor="desc-input" className="text-gray-900 font-medium mb-2">Detailed Description *</Label>
                 <Textarea
                   id="desc-input"
-                  placeholder="Provide details about the incident"
+                  placeholder="Provide details about the incident..."
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                   className="w-full h-32"
-                  aria-label="Incident description"
                 />
               </div>
 
-              {/* Category and Severity - Using Native Selects */}
+              {/* Category and Severity */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="category-select">Category *</label>
-                  <select
-                    id="category-select"
+                  <Label htmlFor="category-select" className="text-gray-900 font-medium mb-2">Category *</Label>
+                  <Select
                     value={formData.category}
-                    onChange={(e) => setFormData({ ...formData, category: e.target.value as IncidentCategory })}
-                    className={inputClass}
-                    aria-label="Select incident category"
+                    onValueChange={(value) => {
+                      setFormData({ ...formData, category: value as IncidentCategory })
+                      setMlAnalysis(null)
+                      setShowMlAnalysis(false)
+                    }}
                   >
-                    {Object.entries(CATEGORY_LABELS).map(([key, { label }]) => (
-                      <option key={key} value={key}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger id="category-select" className="h-12">
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(CATEGORY_LABELS).map(([key, { label, emoji }]) => (
+                        <SelectItem key={key} value={key}>
+                          <div className="flex items-center gap-2">
+                            <span>{emoji}</span>
+                            <span>{label}</span>
+                            {key === 'pothole' && (
+                              <Badge variant="outline" className="ml-2 text-xs">
+                                AI Enabled
+                              </Badge>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="severity-select">Severity Level *</label>
-                  <select 
-                    id="severity-select"
-                    value={formData.severity} 
-                    onChange={(e) => setFormData({ ...formData, severity: e.target.value as Severity })}
-                    className={inputClass}
-                    aria-label="Select incident severity"
+                  <Label htmlFor="severity-select" className="text-gray-900 font-medium mb-2">Severity Level *</Label>
+                  <Select 
+                    value={formData.severity}
+                    onValueChange={(value) => setFormData({ ...formData, severity: value as Severity })}
                   >
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="critical">Critical</option>
-                  </select>
+                    <SelectTrigger id="severity-select" className="h-12">
+                      <SelectValue placeholder="Select severity" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                          Low Priority
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="medium">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-yellow-500"></div>
+                          Medium Priority
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="high">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-orange-500"></div>
+                          High Priority
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="critical">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-red-500"></div>
+                          Critical Emergency
+                        </div>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
               {/* Location */}
               <div>
-                <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="location-input">Location *</label>
+                <Label htmlFor="location-input" className="text-gray-900 font-medium mb-2">Location *</Label>
                 <div className="flex gap-2">
                   <Input 
                     id="location-input"
                     placeholder="Street address or landmark" 
                     value={formData.location} 
                     onChange={(e) => setFormData({ ...formData, location: e.target.value })} 
-                    className="w-full"
-                    aria-label="Location"
+                    className="w-full h-12"
                   />
                   <Button 
+                    type="button"
                     onClick={getCurrentLocation} 
                     variant="outline" 
-                    title="Get Current GPS Location"
-                    aria-label="Get current GPS location"
+                    className="h-12 w-12"
+                    title="Get current location"
                   >
-                    <MapPin className="h-4 w-4" />
+                    <Navigation className="h-4 w-4" />
                   </Button>
-                </div>
-              </div>
-
-              {/* Coordinates */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="lat-input">Latitude</label>
-                  <Input
-                    id="lat-input"
-                    type="number"
-                    step="0.0001"
-                    value={formData.latitude}
-                    onChange={(e) => setFormData({ ...formData, latitude: parseFloat(e.target.value) })}
-                    aria-label="Latitude"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="long-input">Longitude</label>
-                  <Input
-                    id="long-input"
-                    type="number"
-                    step="0.0001"
-                    value={formData.longitude}
-                    onChange={(e) => setFormData({ ...formData, longitude: parseFloat(e.target.value) })}
-                    aria-label="Longitude"
-                  />
                 </div>
               </div>
 
               {/* Camera Photo Capture */}
               <div>
-                <label className="block text-sm font-semibold text-foreground mb-2">Evidence Photo (Optional)</label>
+                <Label className="text-gray-900 font-medium mb-2">Evidence Photos (Optional)</Label>
+                
+                {formData.category === 'pothole' && (
+                  <div className="mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Brain className="h-4 w-4 text-blue-600" />
+                      <span className="text-sm font-medium text-blue-800">AI Pothole Detection Available</span>
+                    </div>
+                    <p className="text-sm text-blue-700">
+                      Take a photo of potholes for automatic severity analysis
+                    </p>
+                  </div>
+                )}
                 
                 {isCameraOpen ? (
                   <div className="mb-4 bg-black rounded-lg overflow-hidden border border-gray-700">
                     <video ref={videoRef} autoPlay playsInline className="w-full h-64 object-cover" />
-                    <div className="p-4 flex justify-center gap-4 bg-muted border-t border-border">
-                      <Button onClick={capturePhoto} className="bg-white text-black hover:bg-gray-200" title="Capture Photo">
-                        <Camera className="w-4 h-4 mr-2" /> Capture
+                    <div className="p-4 flex justify-center gap-4 bg-gray-800">
+                      <Button 
+                        type="button"
+                        onClick={capturePhoto} 
+                        className="bg-white text-black hover:bg-gray-200"
+                        disabled={isAnalyzing}
+                      >
+                        {isAnalyzing ? (
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : (
+                          <Camera className="w-4 h-4 mr-2" />
+                        )}
+                        {isAnalyzing ? 'Analyzing...' : 'Capture & Analyze'}
                       </Button>
-                      <Button onClick={stopCamera} variant="destructive" title="Cancel Camera">
+                      <Button 
+                        type="button"
+                        onClick={stopCamera} 
+                        variant="outline" 
+                        className="text-white border-white"
+                      >
                         Cancel
                       </Button>
                     </div>
                     <canvas ref={canvasRef} className="hidden" />
                   </div>
                 ) : (
-                  <Button
-                    onClick={startCamera}
-                    variant="outline"
-                    className="w-full h-24 border-dashed border-2 flex flex-col gap-2 hover:bg-muted/50"
-                    title="Open Camera"
-                  >
-                    <Camera className="w-8 h-8 text-muted-foreground" />
-                    <span className="text-muted-foreground">Take a Photo at Scene</span>
-                  </Button>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <Button
+                      type="button"
+                      onClick={startCamera}
+                      variant="outline"
+                      className="h-24 border-dashed border-2 flex flex-col gap-2 hover:bg-gray-50 flex-1"
+                    >
+                      <Camera className="w-8 h-8 text-gray-400" />
+                      <span className="text-gray-600">Take Photo</span>
+                    </Button>
+                    
+                    <div className="relative flex-1">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleImageUpload}
+                        className="hidden"
+                        id="file-upload"
+                      />
+                      <label
+                        htmlFor="file-upload"
+                        className="h-24 border-dashed border-2 rounded-md flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-gray-50 transition-colors"
+                      >
+                        <UploadCloud className="w-8 h-8 text-gray-400" />
+                        <span className="text-gray-600">Upload Photo</span>
+                      </label>
+                    </div>
+                  </div>
                 )}
 
                 {/* Preview Captured Images */}
                 {uploadedImages.length > 0 && (
                   <div className="mt-4">
-                    <p className="text-sm font-semibold text-foreground mb-2">{uploadedImages.length} photo(s) captured</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-medium text-gray-900">
+                        {uploadedImages.length} photo(s) captured
+                      </p>
+                      {formData.category === 'pothole' && !mlAnalysis && uploadedImages.length > 0 && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => analyzeImageWithML(uploadedImages[0])}
+                          disabled={isAnalyzing}
+                          className="gap-2"
+                        >
+                          {isAnalyzing ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Brain className="h-3 w-3" />
+                          )}
+                          {isAnalyzing ? 'Analyzing...' : 'Run AI Analysis'}
+                        </Button>
+                      )}
+                    </div>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                       {uploadedImages.map((img, idx) => (
                         <div key={idx} className="relative group">
-                          <img src={img} alt={`Capture ${idx + 1}`} className="w-full h-24 object-cover rounded border border-muted" />
+                          <img 
+                            src={img} 
+                            alt={`Capture ${idx + 1}`} 
+                            className="w-full h-24 object-cover rounded-lg border border-gray-200 hover:border-blue-400 transition-colors"
+                          />
                           <button
-                            onClick={() => setUploadedImages((prev) => prev.filter((_, i) => i !== idx))}
+                            type="button"
+                            onClick={() => {
+                              setUploadedImages(prev => prev.filter((_, i) => i !== idx))
+                              if (uploadedImages.length === 1) {
+                                setMlAnalysis(null)
+                                setShowMlAnalysis(false)
+                              }
+                            }}
                             className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs shadow-sm hover:bg-red-600 transition-colors"
                             aria-label="Remove photo"
                             title="Remove photo"
@@ -541,8 +835,18 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
               </div>
 
               {/* Submit Button */}
-              <Button onClick={handleSubmitReport} className="w-full py-6 text-lg font-bold">
-                <Send className="w-5 h-5 mr-2" /> Submit Report
+              <Button 
+                type="button"
+                onClick={handleSubmitReport} 
+                className="w-full py-6 text-lg font-bold bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 transition-all"
+                disabled={isAnalyzing}
+              >
+                {isAnalyzing ? (
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                ) : (
+                  <Send className="w-5 h-5 mr-2" />
+                )}
+                {isAnalyzing ? 'Processing...' : 'Submit Report'}
               </Button>
             </div>
           </Card>
@@ -553,31 +857,54 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
 
   // --- VIEW: MY REPORTS ---
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50 p-4 md:p-8">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-emerald-50 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
           <div>
-            <h1 className="text-3xl md:text-4xl font-bold text-foreground">My Reports</h1>
-            <p className="text-muted-foreground mt-2">Track your submitted incidents and their status</p>
+            <h1 className="text-3xl md:text-4xl font-bold text-gray-900 flex items-center gap-2">
+              <FileText className="w-8 h-8" />
+              My Reports
+            </h1>
+            <p className="text-gray-600 mt-2">Track your submitted incidents and their status</p>
           </div>
           <div className="flex gap-3">
-            <Button onClick={() => onNavigate('city-wide')} className="bg-secondary text-secondary-foreground">
+            <Button 
+              type="button"
+              onClick={() => onNavigate('city-wide')} 
+              variant="outline"
+              className="border-blue-200 text-blue-700 hover:bg-blue-50"
+            >
               View City-Wide
             </Button>
-            <Button onClick={() => onNavigate('report')} className="bg-primary text-primary-foreground">
-              + New Report
+            <Button 
+              type="button"
+              onClick={() => onNavigate('report')} 
+              className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
+            >
+              <Zap className="w-4 h-4 mr-2" />
+              New Report
             </Button>
-            <Button onClick={onLogout} variant="destructive">
-                <LogOut className="w-4 h-4 mr-2" />
-                Logout
+            <Button 
+              type="button"
+              onClick={onLogout} 
+              variant="outline"
+            >
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
             </Button>
           </div>
         </div>
 
         {myReports.length === 0 ? (
-          <Card className="p-12 text-center">
-            <p className="text-muted-foreground text-lg">No incidents reported yet</p>
-            <Button onClick={() => onNavigate('report')} className="mt-4 bg-primary">
+          <Card className="p-12 text-center hover:shadow-lg transition-shadow">
+            <Sparkles className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+            <p className="text-gray-500 text-lg mb-2">No incidents reported yet</p>
+            <p className="text-gray-400 text-sm mb-6">Be the first to help improve our city!</p>
+            <Button 
+              type="button"
+              onClick={() => onNavigate('report')} 
+              className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
+            >
               Report Your First Incident
             </Button>
           </Card>
@@ -599,14 +926,15 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
             <Card className="max-w-2xl w-full max-h-[90vh] overflow-y-auto p-8">
               <button
+                type="button"
                 onClick={() => setSelectedTicket(null)}
-                className="mb-4 text-muted-foreground hover:text-foreground"
+                className="mb-4 text-gray-600 hover:text-gray-900 transition-colors"
                 aria-label="Close details"
               >
                 ← Close
               </button>
-              <h2 className="text-2xl font-bold text-foreground mb-4">{selectedTicket.title}</h2>
-              <p className="text-muted-foreground mb-6">{selectedTicket.ticketNumber}</p>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">{selectedTicket.title}</h2>
+              <p className="text-gray-600 mb-6">{selectedTicket.ticketNumber}</p>
               <AuditTimeline auditLogs={selectedTicket.audit || []} />
             </Card>
           </div>
