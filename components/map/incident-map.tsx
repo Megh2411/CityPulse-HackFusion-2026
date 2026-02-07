@@ -1,202 +1,301 @@
-'use client'
+// components/map/incident-map.tsx
+"use client";
 
-import { useState } from 'react'
-import { Ticket } from '@/lib/types'
-import { Card } from '@/components/ui/card'
-import { MapPin, TrendingUp } from 'lucide-react'
+import { useEffect, useState } from "react";
+import { Ticket } from "@/lib/types";
 
 interface IncidentMapProps {
-  incidents?: Ticket[]
-  tickets?: Ticket[]
-  onTicketClick?: (ticket: Ticket) => void
-  height?: string
+  incidents: Ticket[];
+  height?: string;
+  onMarkerClick?: (ticket: Ticket) => void;
 }
 
-export default function IncidentMap({ incidents, tickets, onTicketClick, height = 'h-96' }: IncidentMapProps) {
-  const data = incidents || tickets || []
-  const [heatmapMode, setHeatmapMode] = useState(false)
+export default function IncidentMap({
+  incidents,
+  height = "500px",
+  onMarkerClick,
+}: IncidentMapProps) {
+  const [MapComponent, setMapComponent] = useState<any>(null);
 
-  // Create a simple map visualization using divs instead of a full map library
-  // This shows incident density and locations in a grid format
+  useEffect(() => {
+    // Dynamically import leaflet only on client side
+    const loadMap = async () => {
+      const L = await import("leaflet");
+      const { MapContainer, TileLayer, Marker, Popup } =
+        await import("react-leaflet");
 
-  const cityBounds = {
-    minLat: 40.7,
-    maxLat: 40.72,
-    minLng: -74.01,
-    maxLng: -73.99,
-  }
+      // Fix for default icons
+      delete (L.Icon.Default.prototype as any)._getIconUrl;
+      L.Icon.Default.mergeOptions({
+        iconRetinaUrl: "/leaflet/marker-icon-2x.png",
+        iconUrl: "/leaflet/marker-icon.png",
+        shadowUrl: "/leaflet/marker-shadow.png",
+      });
 
-  const latRange = cityBounds.maxLat - cityBounds.minLat
-  const lngRange = cityBounds.maxLng - cityBounds.minLng
+      // Create the actual map component
+      const Map = ({ incidents, height, onMarkerClick }: any) => {
+        const createSeverityIcon = (severity: string) => {
+          const colors: Record<string, string> = {
+            critical: "#DC2626",
+            high: "#EA580C",
+            medium: "#CA8A04",
+            low: "#059669",
+          };
 
-  // Calculate heatmap density
-  const getDensityAtPoint = (lat: number, lng: number) => {
-    let count = 0
-    const radius = 0.02
+          const color = colors[severity] || "#6B7280";
 
-    data.forEach((ticket) => {
-      const dist = Math.sqrt(Math.pow(ticket.latitude - lat, 2) + Math.pow(ticket.longitude - lng, 2))
-      if (dist < radius) count++
-    })
+          const iconHtml = `
+            <div style="
+              background-color: ${color};
+              width: 24px;
+              height: 24px;
+              border-radius: 50%;
+              border: 2px solid white;
+              box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+              display: flex;
+              align-items: center;
+              justify-content: center;
+            ">
+              <div style="
+                width: 8px;
+                height: 8px;
+                background-color: white;
+                border-radius: 50%;
+              "></div>
+            </div>
+          `;
 
-    return Math.min(1, count / Math.max(5, data.length / 5))
-  }
+          return L.divIcon({
+            html: iconHtml,
+            className: "",
+            iconSize: [24, 24],
+            iconAnchor: [12, 12],
+            popupAnchor: [0, -12],
+          });
+        };
 
-  const getHeatmapColor = (density: number) => {
-    if (density === 0) return 'rgba(32, 185, 151, 0.1)'
-    if (density < 0.2) return 'rgba(32, 185, 151, 0.3)'
-    if (density < 0.4) return 'rgba(255, 193, 7, 0.4)'
-    if (density < 0.6) return 'rgba(255, 152, 0, 0.5)'
-    if (density < 0.8) return 'rgba(255, 87, 34, 0.6)'
-    return 'rgba(244, 67, 54, 0.8)'
-  }
+        const validIncidents = incidents.filter(
+          (incident: Ticket) =>
+            incident.latitude &&
+            incident.longitude &&
+            incident.latitude !== 0 &&
+            incident.longitude !== 0,
+        );
 
-  const criticalCount = data.filter((t) => t.severity === 'critical').length
-  const highCount = data.filter((t) => t.severity === 'high').length
+        if (validIncidents.length === 0) {
+          return (
+            <div
+              style={{ height }}
+              className="flex items-center justify-center bg-gray-50 rounded-lg border"
+            >
+              <div className="text-center p-4">
+                <div className="text-gray-400 mb-2">📍</div>
+                <p className="text-gray-500">No incidents with location data</p>
+              </div>
+            </div>
+          );
+        }
 
-  return (
-    <div className="w-full">
-      {/* View Toggle */}
-      <div className="flex gap-2 mb-4">
-        <button
-          onClick={() => setHeatmapMode(false)}
-          className={`px-4 py-2 rounded font-semibold transition ${
-            !heatmapMode ? 'bg-primary text-primary-foreground' : 'bg-white text-foreground border border-muted'
-          }`}
-        >
-          Markers
-        </button>
-        <button
-          onClick={() => setHeatmapMode(true)}
-          className={`px-4 py-2 rounded font-semibold transition flex items-center gap-2 ${
-            heatmapMode ? 'bg-primary text-primary-foreground' : 'bg-white text-foreground border border-muted'
-          }`}
-        >
-          <TrendingUp className="w-4 h-4" /> Heatmap
-        </button>
-      </div>
+        const calculateCenter = (): [number, number] => {
+          if (validIncidents.length === 0) return [19.076, 72.8777];
+          const avgLat =
+            validIncidents.reduce(
+              (sum: number, incident: Ticket) => sum + incident.latitude,
+              0,
+            ) / validIncidents.length;
+          const avgLng =
+            validIncidents.reduce(
+              (sum: number, incident: Ticket) => sum + incident.longitude,
+              0,
+            ) / validIncidents.length;
+          return [avgLat, avgLng];
+        };
 
-      <Card className={`${height} w-full relative overflow-hidden bg-gradient-to-br from-emerald-50 to-blue-100 p-4`}>
-        {/* Map Grid Background */}
-        <svg className="absolute inset-0 w-full h-full" style={{ opacity: 0.1 }}>
-          {Array.from({ length: 5 }).map((_, i) => (
-            <line key={`v-${i}`} x1={`${(i + 1) * 20}%`} y1="0" x2={`${(i + 1) * 20}%`} y2="100%" stroke="gray" strokeWidth="1" />
-          ))}
-          {Array.from({ length: 5 }).map((_, i) => (
-            <line key={`h-${i}`} x1="0" y1={`${(i + 1) * 20}%`} x2="100%" y2={`${(i + 1) * 20}%`} stroke="gray" strokeWidth="1" />
-          ))}
-        </svg>
+        return (
+          <div className="relative rounded-lg overflow-hidden border border-gray-200">
+            <MapContainer
+              center={calculateCenter()}
+              zoom={12}
+              style={{ height, width: "100%" }}
+              className="z-0"
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
 
-        {/* Heatmap Layer */}
-        {heatmapMode && (
-          <div className="absolute inset-0">
-            {Array.from({ length: 12 }).map((_, i) =>
-              Array.from({ length: 12 }).map((_, j) => {
-                const lat = cityBounds.minLat + (i / 12) * latRange
-                const lng = cityBounds.minLng + (j / 12) * lngRange
-                const density = getDensityAtPoint(lat, lng)
+              {validIncidents.map((incident: Ticket) => {
+                const icon = createSeverityIcon(incident.severity);
 
                 return (
-                  <div
-                    key={`${i}-${j}`}
-                    className="absolute"
-                    style={{
-                      left: `${(j / 12) * 100}%`,
-                      top: `${(i / 12) * 100}%`,
-                      width: `${100 / 12}%`,
-                      height: `${100 / 12}%`,
-                      backgroundColor: getHeatmapColor(density),
-                      transition: 'background-color 0.3s ease',
+                  <Marker
+                    key={incident.id}
+                    position={[incident.latitude, incident.longitude]}
+                    icon={icon}
+                    eventHandlers={{
+                      click: () => {
+                        if (onMarkerClick) {
+                          onMarkerClick(incident);
+                        }
+                      },
                     }}
-                  />
-                )
-              }),
-            )}
-          </div>
-        )}
+                  >
+                    <Popup>
+                      <div className="p-2 min-w-[250px]">
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="font-bold text-gray-800 text-sm">
+                            {incident.title}
+                          </h3>
+                          <span
+                            className={`px-2 py-1 text-xs rounded-full font-bold ${
+                              incident.severity === "critical"
+                                ? "bg-red-100 text-red-800"
+                                : incident.severity === "high"
+                                  ? "bg-orange-100 text-orange-800"
+                                  : incident.severity === "medium"
+                                    ? "bg-yellow-100 text-yellow-800"
+                                    : "bg-green-100 text-green-800"
+                            }`}
+                          >
+                            {incident.severity}
+                          </span>
+                        </div>
 
-        {/* Incident Markers */}
-        {!heatmapMode && (
-          <div className="absolute inset-0 w-full h-full">
-            {data.map((ticket) => {
-              const x = ((ticket.longitude - cityBounds.minLng) / lngRange) * 100
-              const y = ((cityBounds.maxLat - ticket.latitude) / latRange) * 100
+                        <div className="space-y-2 text-sm">
+                          <div className="flex items-center text-gray-600">
+                            <span className="mr-2">📍</span>
+                            <span>{incident.location}</span>
+                          </div>
 
-              const sizeMap = {
-                critical: 'w-5 h-5',
-                high: 'w-4 h-4',
-                medium: 'w-3 h-3',
-                low: 'w-2 h-2',
-              }
+                          <div className="flex items-center text-gray-600">
+                            <span className="mr-2">📋</span>
+                            <span className="capitalize">
+                              {incident.status.replace("_", " ")}
+                            </span>
+                          </div>
 
-              const colorMap = {
-                critical: 'bg-red-600',
-                high: 'bg-orange-500',
-                medium: 'bg-yellow-500',
-                low: 'bg-emerald-500',
-              }
+                          <div className="flex items-center text-gray-600">
+                            <span className="mr-2">🏷️</span>
+                            <span className="capitalize">
+                              {incident.category.replace("_", " ")}
+                            </span>
+                          </div>
 
-              return (
-                <div
-                  key={ticket.id}
-                  className={`absolute ${sizeMap[ticket.severity]} ${colorMap[ticket.severity]} rounded-full transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-transform hover:scale-150 shadow-lg ring-2 ring-white`}
-                  style={{
-                    left: `${x}%`,
-                    top: `${y}%`,
-                    zIndex: ticket.severity === 'critical' ? 10 : 5,
-                  }}
-                  onClick={() => onTicketClick?.(ticket)}
-                  title={ticket.title}
-                >
-                  <div className="absolute inset-0 rounded-full bg-current opacity-20 animate-pulse"></div>
+                          <p className="text-gray-700 mt-2 text-xs">
+                            {incident.description.length > 100
+                              ? `${incident.description.substring(0, 100)}...`
+                              : incident.description}
+                          </p>
+
+                          {onMarkerClick && (
+                            <button
+                              onClick={() => onMarkerClick(incident)}
+                              className="mt-3 w-full py-2 px-3 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded transition-colors font-medium"
+                            >
+                              View Details
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
+            </MapContainer>
+
+            {/* Legend */}
+            <div className="absolute bottom-4 left-4 bg-white p-3 rounded-lg shadow-md z-[1000]">
+              <h4 className="text-sm font-semibold mb-2 text-gray-700">
+                Severity
+              </h4>
+              <div className="space-y-2">
+                {[
+                  { label: "Critical", severity: "critical", color: "#DC2626" },
+                  { label: "High", severity: "high", color: "#EA580C" },
+                  { label: "Medium", severity: "medium", color: "#CA8A04" },
+                  { label: "Low", severity: "low", color: "#059669" },
+                ].map((item) => {
+                  const count = validIncidents.filter(
+                    (i: Ticket) => i.severity === item.severity,
+                  ).length;
+                  return (
+                    <div
+                      key={item.severity}
+                      className="flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="w-3 h-3 rounded-full border border-white"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span className="text-xs text-gray-600">
+                          {item.label}
+                        </span>
+                      </div>
+                      <span className="text-xs font-medium text-gray-700">
+                        {count}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Stats box */}
+            <div className="absolute top-4 right-4 bg-white/90 backdrop-blur-sm p-3 rounded-lg shadow-sm z-[1000] max-w-xs">
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">
+                Incident Map
+              </h4>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Total incidents:</span>
+                  <span className="font-medium">{incidents.length}</span>
                 </div>
-              )
-            })}
+                <div className="flex justify-between">
+                  <span className="text-gray-600">With locations:</span>
+                  <span className="font-medium">{validIncidents.length}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Critical:</span>
+                  <span className="font-medium text-red-600">
+                    {
+                      validIncidents.filter(
+                        (i: Ticket) => i.severity === "critical",
+                      ).length
+                    }
+                  </span>
+                </div>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Click markers for details • Drag to navigate
+              </p>
+            </div>
           </div>
-        )}
+        );
+      };
 
-        {/* Legend */}
-        <div className="absolute bottom-4 left-4 z-20 bg-white rounded-lg shadow-md p-3">
-          <p className="text-xs font-semibold text-foreground mb-2">Severity Levels</p>
-          <div className="space-y-1 text-xs">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-red-600 rounded-full"></div>
-              <span>Critical ({criticalCount})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-orange-500 rounded-full"></div>
-              <span>High ({highCount})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-2.5 h-2.5 bg-yellow-500 rounded-full"></div>
-              <span>Medium</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full"></div>
-              <span>Low</span>
-            </div>
-          </div>
+      setMapComponent(() => Map);
+    };
+
+    loadMap();
+  }, []);
+
+  if (!MapComponent) {
+    return (
+      <div
+        style={{ height }}
+        className="flex items-center justify-center bg-gray-100 rounded-lg"
+      >
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
+          <p className="text-gray-500">Loading map...</p>
         </div>
+      </div>
+    );
+  }
 
-        {/* Info Card */}
-        {data.length > 0 && (
-          <div className="absolute top-4 right-4 z-20 bg-white rounded-lg shadow-md p-3">
-            <p className="text-xs font-semibold text-foreground">Active Incidents</p>
-            <p className="text-2xl font-bold text-primary">{data.length}</p>
-            <p className="text-xs text-muted-foreground mt-1">{criticalCount} critical</p>
-          </div>
-        )}
-
-        {/* Empty State */}
-        {data.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-            <div className="text-center">
-              <MapPin className="h-12 w-12 mx-auto mb-2 opacity-50" />
-              <p className="text-sm">No incidents to display</p>
-            </div>
-          </div>
-        )}
-      </Card>
-    </div>
-  )
+  const Map = MapComponent;
+  return (
+    <Map incidents={incidents} height={height} onMarkerClick={onMarkerClick} />
+  );
 }

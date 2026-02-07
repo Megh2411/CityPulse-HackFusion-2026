@@ -1,0 +1,16 @@
+@import 'leaflet/dist/leaflet.css'; 
+ 
+.leaflet-container { 
+  width: 100%; 
+  height: 100%; 
+  z-index: 1; 
+} 
+ 
+/* Fix for default markers */ 
+.leaflet-default-icon-path { 
+  background-image: url('/leaflet/marker-icon.png'); 
+} 
+ 
+.leaflet-default-shadow-path { 
+  background-image: url('/leaflet/marker-shadow.png'); 
+} 
