@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { User, Ticket, IncidentCategory, Severity, CATEGORY_LABELS } from '@/lib/types'
 import { supabase } from '@/lib/supabase'
-import { fetchTickets, createTicket } from '@/lib/api'
+import { createTicket, fetchTickets } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -13,7 +13,7 @@ import IncidentMap from '@/components/map/incident-map'
 import { detectDuplicates } from '@/lib/duplicate-detection'
 import { calculateCityAnalytics } from '@/lib/analytics'
 import { TimeSeriesChart, CategoryDistributionChart, SeverityDistributionChart } from '@/components/charts/incident-charts'
-import { MapPin, Send, Upload, AlertCircle, CheckCircle, Clock, TrendingUp, RefreshCw, LogOut } from 'lucide-react'
+import { MapPin, Send, AlertCircle, CheckCircle, Clock, TrendingUp, RefreshCw, LogOut, Camera, X } from 'lucide-react'
 import AuditTimeline from '@/components/tickets/audit-timeline'
 
 interface CitizenPortalEnhancedProps {
@@ -31,8 +31,12 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [showReportForm, setShowReportForm] = useState(false)
   const [duplicateMatches, setDuplicateMatches] = useState<any[]>([])
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  // Camera & Image State
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const [uploadedImages, setUploadedImages] = useState<string[]>([])
+  const [isCameraOpen, setIsCameraOpen] = useState(false)
 
   const [formData, setFormData] = useState({
     title: '',
@@ -70,16 +74,78 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
   const myReports = tickets.filter((t) => t.reportedBy === currentUser.name)
   const analytics = calculateCityAnalytics(tickets)
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (files) {
-      for (let i = 0; i < files.length; i++) {
-        const reader = new FileReader()
-        reader.onloadend = () => {
-          setUploadedImages((prev) => [...prev, reader.result as string])
-        }
-        reader.readAsDataURL(files[i])
+  // --- GEOLOCATION LOGIC ---
+  const getCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser")
+      return
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords
+        setFormData(prev => ({
+          ...prev,
+          latitude,
+          longitude,
+          // Autofill location text if empty to indicate success
+          location: prev.location ? prev.location : `GPS Detected (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`
+        }))
+      },
+      (err) => {
+        console.error("Location error:", err)
+        alert("Unable to retrieve location. Please allow location access.")
       }
+    )
+  }
+
+  // --- CAMERA LOGIC ---
+  const startCamera = async () => {
+    try {
+      setIsCameraOpen(true)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" }, // Rear camera preferred
+      })
+      // Small timeout to ensure video element is rendered
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+        }
+      }, 100)
+    } catch (err) {
+      console.error("Camera error:", err)
+      alert("Unable to access camera. Please verify permissions.")
+      setIsCameraOpen(false)
+    }
+  }
+
+  const stopCamera = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream
+      stream.getTracks().forEach(track => track.stop())
+      videoRef.current.srcObject = null
+    }
+    setIsCameraOpen(false)
+  }
+
+  const capturePhoto = () => {
+    if (!videoRef.current || !canvasRef.current) return
+
+    const video = videoRef.current
+    const canvas = canvasRef.current
+
+    // Set canvas dimensions
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+
+    const ctx = canvas.getContext("2d")
+    if (ctx) {
+      ctx.drawImage(video, 0, 0)
+      const imageData = canvas.toDataURL("image/jpeg")
+      
+      setUploadedImages(prev => [...prev, imageData])
+      getCurrentLocation() // Auto-grab GPS when photo is taken
+      stopCamera()
     }
   }
 
@@ -89,7 +155,6 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
       return
     }
 
-    // Prepare ticket object for duplicate detection
     const tempTicket = {
       ...formData,
       id: 'temp',
@@ -104,7 +169,6 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
       isDuplicate: false,
     }
 
-    // Check for duplicates
     const matches = detectDuplicates(tempTicket as any, tickets)
 
     if (matches.length > 0 && duplicateMatches.length === 0) {
@@ -113,7 +177,6 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     }
 
     try {
-      // 3. API CALL: Create Ticket in Supabase
       const { error } = await createTicket({
         title: formData.title,
         description: formData.description,
@@ -128,9 +191,8 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
 
       if (error) throw error
 
-      // Reset Form
       setShowReportForm(false)
-      onNavigate('my-reports') // Redirect to list
+      onNavigate('my-reports')
       setFormData({
         title: '',
         description: '',
@@ -380,14 +442,24 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
               {/* Location */}
               <div>
                 <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="location-input">Location *</label>
-                <Input 
-                  id="location-input"
-                  placeholder="Street address or landmark" 
-                  value={formData.location} 
-                  onChange={(e) => setFormData({ ...formData, location: e.target.value })} 
-                  className="w-full"
-                  aria-label="Location"
-                />
+                <div className="flex gap-2">
+                  <Input 
+                    id="location-input"
+                    placeholder="Street address or landmark" 
+                    value={formData.location} 
+                    onChange={(e) => setFormData({ ...formData, location: e.target.value })} 
+                    className="w-full"
+                    aria-label="Location"
+                  />
+                  <Button 
+                    onClick={getCurrentLocation} 
+                    variant="outline" 
+                    title="Get Current GPS Location"
+                    aria-label="Get current GPS location"
+                  >
+                    <MapPin className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
 
               {/* Coordinates */}
@@ -416,42 +488,50 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
                 </div>
               </div>
 
-              {/* Photo Upload */}
+              {/* Camera Photo Capture */}
               <div>
-                <label className="block text-sm font-semibold text-foreground mb-2">Upload Photos (Optional)</label>
-                <div className="border-2 border-dashed border-muted rounded-lg p-6 text-center cursor-pointer hover:bg-muted/50 transition">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    accept="image/*"
-                    onChange={handleImageUpload}
-                    className="hidden"
-                    aria-label="Upload photos"
-                  />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex flex-col items-center gap-2 mx-auto"
+                <label className="block text-sm font-semibold text-foreground mb-2">Evidence Photo (Optional)</label>
+                
+                {isCameraOpen ? (
+                  <div className="mb-4 bg-black rounded-lg overflow-hidden border border-gray-700">
+                    <video ref={videoRef} autoPlay playsInline className="w-full h-64 object-cover" />
+                    <div className="p-4 flex justify-center gap-4 bg-muted border-t border-border">
+                      <Button onClick={capturePhoto} className="bg-white text-black hover:bg-gray-200" title="Capture Photo">
+                        <Camera className="w-4 h-4 mr-2" /> Capture
+                      </Button>
+                      <Button onClick={stopCamera} variant="destructive" title="Cancel Camera">
+                        Cancel
+                      </Button>
+                    </div>
+                    <canvas ref={canvasRef} className="hidden" />
+                  </div>
+                ) : (
+                  <Button
+                    onClick={startCamera}
+                    variant="outline"
+                    className="w-full h-24 border-dashed border-2 flex flex-col gap-2 hover:bg-muted/50"
+                    title="Open Camera"
                   >
-                    <Upload className="w-8 h-8 text-muted-foreground" />
-                    <span className="text-sm font-semibold text-foreground">Click to upload or drag and drop</span>
-                    <span className="text-xs text-muted-foreground">PNG, JPG, GIF up to 10MB</span>
-                  </button>
-                </div>
+                    <Camera className="w-8 h-8 text-muted-foreground" />
+                    <span className="text-muted-foreground">Take a Photo at Scene</span>
+                  </Button>
+                )}
 
-                {/* Preview uploaded images */}
+                {/* Preview Captured Images */}
                 {uploadedImages.length > 0 && (
                   <div className="mt-4">
-                    <p className="text-sm font-semibold text-foreground mb-2">{uploadedImages.length} image(s) uploaded</p>
+                    <p className="text-sm font-semibold text-foreground mb-2">{uploadedImages.length} photo(s) captured</p>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                       {uploadedImages.map((img, idx) => (
-                        <div key={idx} className="relative">
-                          <img src={img || "/placeholder.svg"} alt={`Upload ${idx}`} className="w-full h-24 object-cover rounded border border-muted" />
+                        <div key={idx} className="relative group">
+                          <img src={img} alt={`Capture ${idx + 1}`} className="w-full h-24 object-cover rounded border border-muted" />
                           <button
                             onClick={() => setUploadedImages((prev) => prev.filter((_, i) => i !== idx))}
-                            className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs"
+                            className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs shadow-sm hover:bg-red-600 transition-colors"
+                            aria-label="Remove photo"
+                            title="Remove photo"
                           >
-                            ×
+                            <X className="w-3 h-3" />
                           </button>
                         </div>
                       ))}
@@ -521,6 +601,7 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
               <button
                 onClick={() => setSelectedTicket(null)}
                 className="mb-4 text-muted-foreground hover:text-foreground"
+                aria-label="Close details"
               >
                 ← Close
               </button>
