@@ -2,8 +2,9 @@
 
 import { User } from '@/lib/types'
 import { Button } from '@/components/ui/button'
-import { Menu, LogOut, Home, FileText, BarChart3, Users } from 'lucide-react'
+import { Menu, LogOut, Home, FileText, BarChart3, Users, X, Bell } from 'lucide-react'
 import { useState } from 'react'
+import Header from '@/components/layout/header'
 
 interface NavigationBarProps {
   currentUser: User
