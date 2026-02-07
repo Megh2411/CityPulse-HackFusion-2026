@@ -1,22 +1,20 @@
 'use client'
 
-import React from "react"
-
-import { useState, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { User, Ticket, IncidentCategory, Severity, CATEGORY_LABELS } from '@/lib/types'
-import { storage } from '@/lib/storage'
+import { supabase } from '@/lib/supabase'
+import { fetchTickets, createTicket } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { Select } from '@/components/ui/select'
 import TicketCard from '@/components/tickets/ticket-card'
 import IncidentMap from '@/components/map/incident-map'
 import { detectDuplicates } from '@/lib/duplicate-detection'
 import { calculateCityAnalytics } from '@/lib/analytics'
 import { TimeSeriesChart, CategoryDistributionChart, SeverityDistributionChart } from '@/components/charts/incident-charts'
-import { MapPin, Send, Upload, AlertCircle, CheckCircle, Clock, TrendingUp } from 'lucide-react'
-import AuditTimeline from '@/components/tickets/audit-timeline' // Import AuditTimeline
+import { MapPin, Send, Upload, AlertCircle, CheckCircle, Clock, TrendingUp, RefreshCw } from 'lucide-react'
+import AuditTimeline from '@/components/tickets/audit-timeline'
 
 interface CitizenPortalEnhancedProps {
   currentUser: User
@@ -25,7 +23,10 @@ interface CitizenPortalEnhancedProps {
 }
 
 export default function CitizenPortalEnhanced({ currentUser, onNavigate, currentView }: CitizenPortalEnhancedProps) {
-  const [tickets, setTickets] = useState(storage.getTickets())
+  // 1. STATE: Live data from Supabase
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [loading, setLoading] = useState(true)
+  
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [showReportForm, setShowReportForm] = useState(false)
   const [duplicateMatches, setDuplicateMatches] = useState<any[]>([])
@@ -41,6 +42,29 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     latitude: 40.7128,
     longitude: -74.006,
   })
+
+  // 2. DATA FETCHING & REALTIME
+  const loadData = async () => {
+    setLoading(true)
+    const data = await fetchTickets()
+    setTickets(data)
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    loadData()
+
+    const channel = supabase
+      .channel('citizen-portal-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'incidents' }, () => {
+        fetchTickets().then(setTickets)
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
 
   const myReports = tickets.filter((t) => t.reportedBy === currentUser.name)
   const analytics = calculateCityAnalytics(tickets)
@@ -58,68 +82,83 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     }
   }
 
-  const handleSubmitReport = () => {
+  const handleSubmitReport = async () => {
     if (!formData.title || !formData.description || !formData.location) {
       alert('Please fill in all required fields')
       return
     }
 
-    // Check for duplicates
-    const matches = detectDuplicates(
-      {
-        ...formData,
-        id: '',
-        ticketNumber: '',
-        status: 'open',
-        reportedBy: currentUser.name,
-        reportedAt: new Date().toISOString(),
-        images: uploadedImages,
-        comments: [],
-        audit: [],
-        tags: [],
-        isDuplicate: false,
-      },
-      tickets,
-    )
+    // Prepare ticket object for duplicate detection
+    const tempTicket = {
+      ...formData,
+      id: 'temp',
+      ticketNumber: 'temp',
+      status: 'open',
+      reportedBy: currentUser.name,
+      reportedAt: new Date().toISOString(),
+      images: uploadedImages,
+      comments: [],
+      audit: [],
+      tags: [],
+      isDuplicate: false,
+    }
 
-    if (matches.length > 0) {
+    // Check for duplicates
+    const matches = detectDuplicates(tempTicket as any, tickets)
+
+    if (matches.length > 0 && duplicateMatches.length === 0) {
       setDuplicateMatches(matches)
       return
     }
 
-    const newTicket = storage.createTicket({
-      title: formData.title,
-      description: formData.description,
-      category: formData.category,
-      severity: formData.severity,
-      location: formData.location,
-      latitude: formData.latitude,
-      longitude: formData.longitude,
-      images: uploadedImages,
-    })
+    try {
+      // 3. API CALL: Create Ticket in Supabase
+      const { error } = await createTicket({
+        title: formData.title,
+        description: formData.description,
+        category: formData.category,
+        severity: formData.severity,
+        location: formData.location,
+        latitude: formData.latitude,
+        longitude: formData.longitude,
+        reportedBy: currentUser.name,
+        images: uploadedImages
+      })
 
-    setTickets(storage.getTickets())
-    setShowReportForm(false)
-    setFormData({
-      title: '',
-      description: '',
-      category: 'pothole',
-      severity: 'medium',
-      location: '',
-      latitude: 40.7128,
-      longitude: -74.006,
-    })
-    setUploadedImages([])
-    setDuplicateMatches([])
+      if (error) throw error
+
+      // Reset Form
+      setShowReportForm(false)
+      onNavigate('my-reports') // Redirect to list
+      setFormData({
+        title: '',
+        description: '',
+        category: 'pothole',
+        severity: 'medium',
+        location: '',
+        latitude: 40.7128,
+        longitude: -74.006,
+      })
+      setUploadedImages([])
+      setDuplicateMatches([])
+      
+    } catch (err) {
+      console.error('Error creating ticket:', err)
+      alert('Failed to submit report. Please try again.')
+    }
   }
 
+  // --- VIEW: CITY WIDE ---
   if (currentView === 'city-wide') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50 p-4 md:p-8">
         <div className="max-w-7xl mx-auto">
           <div className="flex items-center justify-between mb-8">
             <div>
-              <h1 className="text-3xl md:text-4xl font-bold text-foreground">City-Wide Incidents</h1>
+              <h1 className="text-3xl md:text-4xl font-bold text-foreground flex items-center gap-2">
+                City-Wide Incidents
+                {loading && <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />}
+              </h1>
               <p className="text-muted-foreground mt-2">Real-time view of all reported incidents across your city</p>
             </div>
             <button
@@ -222,7 +261,10 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     )
   }
 
+  // --- VIEW: REPORT FORM ---
   if (currentView === 'report' || showReportForm) {
+    const inputClass = "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50 p-4 md:p-8">
         <div className="max-w-2xl mx-auto">
@@ -253,7 +295,12 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
                   )
                 })}
               </div>
-              <Button onClick={() => setDuplicateMatches([])} className="mt-4 w-full">
+              <Button onClick={() => {
+                  setDuplicateMatches([]) // Clear duplicates to allow submission next click
+                  handleSubmitReport() // Trigger submit
+                }} 
+                className="mt-4 w-full"
+              >
                 Continue Anyway
               </Button>
             </Card>
@@ -263,77 +310,101 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
             <div className="space-y-6">
               {/* Title */}
               <div>
-                <label className="block text-sm font-semibold text-foreground mb-2">Incident Title *</label>
+                <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="title-input">Incident Title *</label>
                 <Input
+                  id="title-input"
                   placeholder="Brief description of the issue"
                   value={formData.title}
                   onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                   className="w-full"
+                  aria-label="Incident title"
                 />
               </div>
 
               {/* Description */}
               <div>
-                <label className="block text-sm font-semibold text-foreground mb-2">Detailed Description *</label>
+                <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="desc-input">Detailed Description *</label>
                 <Textarea
+                  id="desc-input"
                   placeholder="Provide details about the incident"
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                   className="w-full h-32"
+                  aria-label="Incident description"
                 />
               </div>
 
-              {/* Category and Severity */}
+              {/* Category and Severity - Using Native Selects for A11y & Compatibility */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-semibold text-foreground mb-2">Category *</label>
-                  <Select
+                  <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="category-select">Category *</label>
+                  <select
+                    id="category-select"
                     value={formData.category}
                     onChange={(e) => setFormData({ ...formData, category: e.target.value as IncidentCategory })}
+                    className={inputClass}
+                    aria-label="Select incident category"
                   >
                     {Object.entries(CATEGORY_LABELS).map(([key, { label }]) => (
                       <option key={key} value={key}>
                         {label}
                       </option>
                     ))}
-                  </Select>
+                  </select>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-foreground mb-2">Severity Level *</label>
-                  <Select value={formData.severity} onChange={(e) => setFormData({ ...formData, severity: e.target.value as Severity })}>
+                  <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="severity-select">Severity Level *</label>
+                  <select 
+                    id="severity-select"
+                    value={formData.severity} 
+                    onChange={(e) => setFormData({ ...formData, severity: e.target.value as Severity })}
+                    className={inputClass}
+                    aria-label="Select incident severity"
+                  >
                     <option value="low">Low</option>
                     <option value="medium">Medium</option>
                     <option value="high">High</option>
                     <option value="critical">Critical</option>
-                  </Select>
+                  </select>
                 </div>
               </div>
 
               {/* Location */}
               <div>
-                <label className="block text-sm font-semibold text-foreground mb-2">Location *</label>
-                <Input placeholder="Street address or landmark" value={formData.location} onChange={(e) => setFormData({ ...formData, location: e.target.value })} className="w-full" />
+                <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="location-input">Location *</label>
+                <Input 
+                  id="location-input"
+                  placeholder="Street address or landmark" 
+                  value={formData.location} 
+                  onChange={(e) => setFormData({ ...formData, location: e.target.value })} 
+                  className="w-full"
+                  aria-label="Location"
+                />
               </div>
 
               {/* Coordinates */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-semibold text-foreground mb-2">Latitude</label>
+                  <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="lat-input">Latitude</label>
                   <Input
+                    id="lat-input"
                     type="number"
                     step="0.0001"
                     value={formData.latitude}
                     onChange={(e) => setFormData({ ...formData, latitude: parseFloat(e.target.value) })}
+                    aria-label="Latitude"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-foreground mb-2">Longitude</label>
+                  <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="long-input">Longitude</label>
                   <Input
+                    id="long-input"
                     type="number"
                     step="0.0001"
                     value={formData.longitude}
                     onChange={(e) => setFormData({ ...formData, longitude: parseFloat(e.target.value) })}
+                    aria-label="Longitude"
                   />
                 </div>
               </div>
@@ -349,6 +420,7 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
                     accept="image/*"
                     onChange={handleImageUpload}
                     className="hidden"
+                    aria-label="Upload photos"
                   />
                   <button
                     onClick={() => fileInputRef.current?.click()}
@@ -392,7 +464,7 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     )
   }
 
-  // My Reports View
+  // --- VIEW: MY REPORTS ---
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
@@ -424,8 +496,8 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
               <TicketCard
                 key={ticket.id}
                 ticket={ticket}
-                onSelect={() => setSelectedTicket(ticket)}
-                userRole={currentUser.role}
+                onClick={() => setSelectedTicket(ticket)}
+                clickable
               />
             ))}
           </div>
@@ -443,7 +515,7 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
               </button>
               <h2 className="text-2xl font-bold text-foreground mb-4">{selectedTicket.title}</h2>
               <p className="text-muted-foreground mb-6">{selectedTicket.ticketNumber}</p>
-              <AuditTimeline ticket={selectedTicket} />
+              <AuditTimeline auditLogs={selectedTicket.audit} />
             </Card>
           </div>
         )}

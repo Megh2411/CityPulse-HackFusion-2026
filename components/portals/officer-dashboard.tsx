@@ -1,16 +1,17 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { User, Ticket, TicketStatus } from '@/lib/types'
-import { storage } from '@/lib/storage'
+import { supabase } from '@/lib/supabase'
+import { fetchTickets } from '@/lib/api' 
+import { storage } from '@/lib/storage' // Keeping storage for static user list
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Select } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import TicketCard from '@/components/tickets/ticket-card'
-import AuditTimeline from '@/components/tickets/audit-timeline'
 import OfficerTaskManager from '@/components/portals/officer-task-manager'
-import { Zap, AlertTriangle, Clock, CheckCircle, Users, Filter, Search } from 'lucide-react'
+import AuditTimeline from '@/components/tickets/audit-timeline'
+import { Zap, AlertTriangle, Filter, Search, RefreshCw, BarChart, MapPin, MessageSquare, Clock } from 'lucide-react'
 
 interface OfficerDashboardProps {
   currentUser: User
@@ -19,16 +20,55 @@ interface OfficerDashboardProps {
 }
 
 export default function OfficerDashboard({ currentUser, onNavigate, currentView }: OfficerDashboardProps) {
-  const [tickets, setTickets] = useState(storage.getTickets())
+  // 1. STATE: Live Data
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [loading, setLoading] = useState(true)
+  
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [statusFilter, setStatusFilter] = useState<TicketStatus | 'all'>('all')
   const [severityFilter, setSeverityFilter] = useState<string>('all')
   const [searchTerm, setSearchTerm] = useState('')
-  const [assignee, setAssignee] = useState('')
 
+  // Static users list
   const fieldStaff = storage.getUsers().filter((u) => u.role === 'field_staff')
 
-  // Filter tickets
+  // 2. DATA FETCHING
+  const loadData = async () => {
+    setLoading(true)
+    const data = await fetchTickets()
+    setTickets(data)
+    setLoading(false)
+    
+    // Update selected ticket if open
+    if (selectedTicket) {
+      const updated = data.find(t => t.id === selectedTicket.id)
+      if (updated) setSelectedTicket(updated)
+    }
+  }
+
+  useEffect(() => {
+    loadData()
+
+    const channel = supabase
+      .channel('officer-dashboard')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'incidents' }, () => {
+        fetchTickets().then((data) => {
+          setTickets(data)
+          if (selectedTicket) {
+             const updated = data.find(t => t.id === selectedTicket.id)
+             if (updated) setSelectedTicket(updated)
+          }
+        })
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTicket?.id])
+
+  // 3. FILTER LOGIC
   let filteredTickets = tickets
   if (statusFilter !== 'all') {
     filteredTickets = filteredTickets.filter((t) => t.status === statusFilter)
@@ -49,35 +89,42 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
     resolved: tickets.filter((t) => t.status === 'resolved').length,
   }
 
-  const handleAssignTicket = (ticketId: string, staffName: string) => {
-    const updated = storage.updateTicket(
-      ticketId,
-      { assignedTo: staffName, status: 'assigned' },
-      currentUser.name,
-      currentUser.role
-    )
+  // 4. ASSIGNMENT ACTION
+  const handleAssignTicket = async (ticketId: string, staffName: string) => {
+    try {
+      const { error } = await supabase
+        .from('incidents')
+        .update({ 
+          assigned_to: staffName, 
+          status: 'assigned' 
+        })
+        .eq('id', ticketId)
 
-    if (updated) {
-      setTickets(storage.getTickets())
-      if (selectedTicket?.id === ticketId) {
-        setSelectedTicket(updated)
-      }
+      if (error) throw error
+
       alert(`Ticket assigned to ${staffName}`)
+      
+    } catch (err) {
+      console.error('Assignment failed:', err)
+      alert('Failed to assign ticket')
     }
   }
 
-  // Team Management view
+  // Team Management View
   if (currentView === 'team') {
     return <OfficerTaskManager currentUser={currentUser} />
   }
 
-  // Home view
+  // Home View
   if (currentView === 'home') {
     return (
       <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto">
         {/* Dashboard Header */}
         <Card className="bg-gradient-to-r from-primary to-secondary text-white p-6 md:p-8">
-          <h2 className="text-2xl md:text-3xl font-bold mb-2">Operations Dashboard</h2>
+          <h2 className="text-2xl md:text-3xl font-bold mb-2 flex items-center gap-2">
+            Operations Dashboard
+            {loading && <RefreshCw className="h-5 w-5 animate-spin text-white/80" />}
+          </h2>
           <p className="text-orange-50">Monitor and manage all urban incidents</p>
         </Card>
 
@@ -107,12 +154,22 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
             <Zap className="h-4 w-4 mr-2" />
             All Incidents
           </Button>
-          <Button onClick={() => setStatusFilter('critical')} variant="outline" className="h-12">
+          
+          {/* FIX: Correctly setting Severity Filter, not Status Filter */}
+          <Button 
+            onClick={() => {
+              setSeverityFilter('critical')
+              onNavigate('incidents')
+            }} 
+            variant="outline" 
+            className="h-12"
+          >
             <AlertTriangle className="h-4 w-4 mr-2" />
             Critical
           </Button>
+          
           <Button onClick={() => onNavigate('team')} variant="outline" className="h-12">
-            <Users className="h-4 w-4 mr-2" />
+            <BarChart className="h-4 w-4 mr-2" />
             Team
           </Button>
           <Button onClick={() => onNavigate('incidents')} variant="outline" className="h-12">
@@ -123,7 +180,7 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
 
         {/* Recent Critical Incidents */}
         <div>
-          <h3 className="text-lg md:text-xl font-bold mb-4">Critical Incidents</h3>
+          <h3 className="text-lg md:text-xl font-bold mb-4">Recent Critical Incidents</h3>
           {stats.critical === 0 ? (
             <Card className="p-8 text-center">
               <p className="text-muted-foreground">No critical incidents</p>
@@ -135,22 +192,41 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
                 .slice(0, 3)
                 .map((ticket) => (
                   <div key={ticket.id} onClick={() => setSelectedTicket(ticket)}>
-                    <TicketCard ticket={ticket} clickable />
+                    <TicketCard ticket={ticket} clickable onClick={() => setSelectedTicket(ticket)} />
                   </div>
                 ))}
             </div>
           )}
         </div>
+        
+        {/* Selected Ticket Modal (Reusable) */}
+        {selectedTicket && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+             <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+                <IncidentDetailView
+                  ticket={selectedTicket}
+                  onClose={() => setSelectedTicket(null)}
+                  fieldStaff={fieldStaff}
+                  onAssign={handleAssignTicket}
+                />
+             </div>
+          </div>
+        )}
       </div>
     )
   }
 
-  // All Incidents view
+  // All Incidents View
   if (currentView === 'incidents') {
+    const inputClass = "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+
     return (
       <div className="p-4 md:p-6 max-w-6xl mx-auto overflow-y-auto space-y-6">
         <div className="flex flex-col gap-4">
-          <h2 className="text-2xl md:text-3xl font-bold text-foreground">All Incidents</h2>
+          <div className="flex items-center justify-between">
+             <h2 className="text-2xl md:text-3xl font-bold text-foreground">All Incidents</h2>
+             <Button variant="ghost" onClick={() => onNavigate('home')}>← Back</Button>
+          </div>
 
           {/* Filters */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -161,22 +237,36 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10 w-full"
+                aria-label="Search incidents"
               />
             </div>
-            <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as any)}>
+            
+            <select 
+              value={statusFilter} 
+              onChange={(e) => setStatusFilter(e.target.value as any)}
+              className={inputClass}
+              aria-label="Filter by status"
+            >
               <option value="all">All Status</option>
               <option value="open">Open</option>
               <option value="assigned">Assigned</option>
               <option value="in_progress">In Progress</option>
               <option value="resolved">Resolved</option>
-            </Select>
-            <Select value={severityFilter} onValueChange={(value) => setSeverityFilter(value)}>
+            </select>
+
+            <select 
+              value={severityFilter} 
+              onChange={(e) => setSeverityFilter(e.target.value)}
+              className={inputClass}
+              aria-label="Filter by severity"
+            >
               <option value="all">All Severity</option>
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
               <option value="critical">Critical</option>
-            </Select>
+            </select>
+
             <Button
               variant="outline"
               onClick={() => {
@@ -191,71 +281,34 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
           </div>
         </div>
 
-        {selectedTicket ? (
-          <IncidentDetailView
-            ticket={selectedTicket}
-            onClose={() => setSelectedTicket(null)}
-            fieldStaff={fieldStaff}
-            onAssign={handleAssignTicket}
-          />
+        {/* List */}
+        {filteredTickets.length === 0 ? (
+          <Card className="p-8 text-center">
+            <p className="text-muted-foreground">No incidents found matching criteria</p>
+          </Card>
         ) : (
-          <>
-            {filteredTickets.length === 0 ? (
-              <Card className="p-8 text-center">
-                <p className="text-muted-foreground">No incidents found</p>
-              </Card>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-sm text-muted-foreground">Showing {filteredTickets.length} incidents</p>
-                {filteredTickets.map((ticket) => (
-                  <div key={ticket.id} onClick={() => setSelectedTicket(ticket)}>
-                    <TicketCard ticket={ticket} clickable />
-                  </div>
-                ))}
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">Showing {filteredTickets.length} incidents</p>
+            {filteredTickets.map((ticket) => (
+              <div key={ticket.id} onClick={() => setSelectedTicket(ticket)}>
+                <TicketCard ticket={ticket} clickable onClick={() => setSelectedTicket(ticket)} />
               </div>
-            )}
-          </>
+            ))}
+          </div>
         )}
-      </div>
-    )
-  }
 
-  // Team Management view
-  if (currentView === 'team') {
-    return (
-      <div className="p-4 md:p-6 max-w-4xl mx-auto overflow-y-auto space-y-6">
-        <h2 className="text-2xl md:text-3xl font-bold text-foreground">Team Management</h2>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {fieldStaff.map((staff) => {
-            const assignedCount = tickets.filter((t) => t.assignedTo === staff.name).length
-            const completedCount = tickets.filter((t) => t.resolvedBy === staff.name).length
-
-            return (
-              <Card key={staff.id} className="p-6">
-                <h3 className="text-lg font-bold text-foreground mb-2">{staff.name}</h3>
-                <p className="text-sm text-muted-foreground mb-4">{staff.email}</p>
-
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">Active Jobs</span>
-                    <span className="font-bold text-primary">{assignedCount}</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">Completed</span>
-                    <span className="font-bold text-emerald-600">{completedCount}</span>
-                  </div>
-                  <div className="bg-muted rounded-full h-2 w-full mt-2">
-                    <div
-                      className="bg-primary rounded-full h-2 transition-all"
-                      style={{ width: `${((completedCount / (assignedCount + completedCount || 1)) * 100).toFixed(0)}%` }}
-                    ></div>
-                  </div>
-                </div>
-              </Card>
-            )
-          })}
-        </div>
+        {selectedTicket && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+             <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+                <IncidentDetailView
+                  ticket={selectedTicket}
+                  onClose={() => setSelectedTicket(null)}
+                  fieldStaff={fieldStaff}
+                  onAssign={handleAssignTicket}
+                />
+             </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -275,22 +328,28 @@ function IncidentDetailView({
   onAssign: (ticketId: string, staffName: string) => void
 }) {
   const [selectedStaff, setSelectedStaff] = useState(ticket.assignedTo || '')
+  
+  const selectClass = "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
 
   return (
     <div className="space-y-4">
-      <Button variant="ghost" onClick={onClose} className="mb-4">
-        ← Back
-      </Button>
-      <Card className="p-6 space-y-6">
+      <Card className="p-6 space-y-6 shadow-2xl border-2 border-primary/20">
+        <div className="flex justify-between items-start">
+           <h2 className="text-2xl font-bold">Incident Details</h2>
+           <Button variant="ghost" onClick={onClose}>Close</Button>
+        </div>
+        
         <TicketCard ticket={ticket} expanded />
 
         {/* Assignment Section */}
         <div className="border-t border-border pt-6 space-y-3">
           <h3 className="font-bold text-lg">Assignment</h3>
           <div className="flex gap-2 flex-col sm:flex-row">
-            <Select
+            <select
               value={selectedStaff}
-              onValueChange={(value) => setSelectedStaff(value)}
+              onChange={(e) => setSelectedStaff(e.target.value)}
+              className={`${selectClass} flex-1`}
+              aria-label="Assign to field staff"
             >
               <option value="">Assign to field staff...</option>
               {fieldStaff.map((staff) => (
@@ -298,7 +357,7 @@ function IncidentDetailView({
                   {staff.name} ({staff.department})
                 </option>
               ))}
-            </Select>
+            </select>
             <Button
               onClick={() => onAssign(ticket.id, selectedStaff)}
               disabled={!selectedStaff}
@@ -308,8 +367,10 @@ function IncidentDetailView({
             </Button>
           </div>
         </div>
-
-        <AuditTimeline auditLogs={ticket.audit} />
+        
+        <div className="border-t border-border pt-6">
+           <AuditTimeline auditLogs={ticket.audit || []} />
+        </div>
       </Card>
     </div>
   )

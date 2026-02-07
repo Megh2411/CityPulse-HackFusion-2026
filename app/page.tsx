@@ -1,41 +1,67 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { User } from '@/lib/types'
-import { storage } from '@/lib/storage'
-import LandingPage from '@/components/layout/landing-page'
-import LoginPage from '@/components/auth/login-page'
-import Dashboard from '@/components/dashboard/dashboard'
+import { useState } from 'react'
+import { AuthProvider, useAuth } from '@/components/auth-provider'
+import AuthPage from '@/components/auth-page'
+import AdminDashboardEnhanced from '@/components/portals/admin-dashboard-enhanced'
+import OfficerDashboard from '@/components/portals/officer-dashboard'
+import FieldStaffEnhanced from '@/components/portals/field-staff-enhanced'
+import CitizenPortalEnhanced from '@/components/portals/citizen-portal-enhanced'
+import { Loader2 } from 'lucide-react'
 
-export default function Home() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [showLogin, setShowLogin] = useState(false)
+// Main App Controller
+function AppContent() {
+  const { user, loading, signOut } = useAuth()
+  const [currentView, setCurrentView] = useState('home') // 'home' | 'incidents' | 'map' etc.
 
-  useEffect(() => {
-    const user = storage.getCurrentUser()
-    setCurrentUser(user)
-    setIsLoading(false)
-  }, [])
-
-  if (isLoading) {
+  // 1. Loading State
+  if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-foreground font-medium">Loading CityPulse...</p>
-        </div>
+      <div className="h-screen w-full flex items-center justify-center bg-background">
+        <Loader2 className="w-10 h-10 animate-spin text-primary" />
       </div>
     )
   }
 
-  if (currentUser) {
-    return <Dashboard currentUser={currentUser} onLogout={() => setCurrentUser(null)} />
+  // 2. Auth State (Not logged in)
+  if (!user) {
+    return <AuthPage />
   }
 
-  if (showLogin) {
-    return <LoginPage onLoginSuccess={setCurrentUser} />
+  // 3. Logged In - Router based on Role
+  switch (user.role) {
+    case 'admin':
+      return <AdminDashboardEnhanced currentUser={user} onLogout={signOut} />
+    
+    case 'officer':
+      return (
+        <OfficerDashboard 
+          currentUser={user} 
+          currentView={currentView === 'home' ? 'home' : currentView} 
+          onNavigate={setCurrentView} 
+        />
+      )
+    
+    case 'field_staff':
+      return <FieldStaffEnhanced currentUser={user} onLogout={signOut} />
+    
+    case 'citizen':
+    default:
+      return (
+        <CitizenPortalEnhanced 
+          currentUser={user} 
+          currentView={currentView === 'home' ? 'city-wide' : currentView} // Default citizen view
+          onNavigate={setCurrentView} 
+        />
+      )
   }
+}
 
-  return <LandingPage onGetStarted={() => setShowLogin(true)} />
+// Wrap app in Provider
+export default function Home() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  )
 }

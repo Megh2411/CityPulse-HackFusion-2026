@@ -1,15 +1,15 @@
 'use client'
 
-import { useState } from 'react'
-import { User, Ticket, TicketStatus, CATEGORY_LABELS } from '@/lib/types'
-import { storage } from '@/lib/storage'
+import { useState, useEffect } from 'react'
+import { User, Ticket, TicketStatus } from '@/lib/types'
+import { supabase } from '@/lib/supabase'
+import { fetchTickets, updateTicketStatus } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
-import { Select } from '@/components/ui/select'
 import TicketCard from '@/components/tickets/ticket-card'
 import AuditTimeline from '@/components/tickets/audit-timeline'
-import { CheckCircle, MapPin, Navigation, MessageCircle } from 'lucide-react'
+import { CheckCircle, MessageCircle, RefreshCw } from 'lucide-react'
 
 interface FieldStaffInterfaceProps {
   currentUser: User
@@ -18,75 +18,115 @@ interface FieldStaffInterfaceProps {
 }
 
 export default function FieldStaffInterface({ currentUser, onNavigate, currentView }: FieldStaffInterfaceProps) {
-  const [tickets, setTickets] = useState(storage.getTickets())
+  // 1. STATE: Live data
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [loading, setLoading] = useState(true)
+  
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [comment, setComment] = useState('')
   const [newStatus, setNewStatus] = useState<TicketStatus | ''>('')
 
+  // 2. DATA FETCHING
+  const loadData = async () => {
+    setLoading(true)
+    const data = await fetchTickets()
+    setTickets(data)
+    setLoading(false)
+    
+    // Update selected ticket reference if it exists
+    if (selectedTicket) {
+      const updated = data.find(t => t.id === selectedTicket.id)
+      if (updated) setSelectedTicket(updated)
+    }
+  }
+
+  useEffect(() => {
+    loadData()
+
+    const channel = supabase
+      .channel('field-staff-interface')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'incidents' }, () => {
+        fetchTickets().then((data) => {
+          setTickets(data)
+          if (selectedTicket) {
+             const updated = data.find(t => t.id === selectedTicket.id)
+             if (updated) setSelectedTicket(updated)
+          }
+        })
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, () => {
+        fetchTickets().then((data) => {
+          setTickets(data)
+          if (selectedTicket) {
+             const updated = data.find(t => t.id === selectedTicket.id)
+             if (updated) setSelectedTicket(updated)
+          }
+        })
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTicket?.id]) 
+
   const assignedTickets = tickets.filter((t) => t.assignedTo === currentUser.name)
   const availableTickets = tickets.filter((t) => !t.assignedTo && t.status === 'open')
 
-  const handleAddComment = () => {
+  // 3. ASYNC ACTIONS
+  const handleAddComment = async () => {
     if (!comment.trim() || !selectedTicket) return
 
-    const updated = storage.updateTicket(
-      selectedTicket.id,
-      {
-        comments: [
-          ...selectedTicket.comments,
-          {
-            id: Math.random().toString(36).substring(7),
-            author: currentUser.name,
-            authorRole: currentUser.role,
-            content: comment,
-            createdAt: new Date().toISOString(),
-            edited: false,
-          },
-        ],
-      },
-      currentUser.name,
-      currentUser.role
-    )
+    try {
+      const { error } = await supabase
+        .from('comments')
+        .insert({
+          incident_id: selectedTicket.id,
+          author: currentUser.name,
+          author_role: currentUser.role,
+          content: comment
+        })
 
-    if (updated) {
-      setSelectedTicket(updated)
-      setTickets(storage.getTickets())
+      if (error) throw error
       setComment('')
+      
+    } catch (error) {
+      console.error('Error adding comment:', error)
+      alert('Failed to add note')
     }
   }
 
-  const handleStatusChange = () => {
+  const handleStatusChange = async () => {
     if (!newStatus || !selectedTicket) return
 
-    const updated = storage.updateTicket(
-      selectedTicket.id,
-      { status: newStatus as TicketStatus },
-      currentUser.name,
-      currentUser.role
-    )
-
-    if (updated) {
-      setSelectedTicket(updated)
-      setTickets(storage.getTickets())
+    try {
+      await updateTicketStatus(selectedTicket.id, newStatus as TicketStatus, currentUser.name)
       setNewStatus('')
+    } catch (error) {
+      console.error('Error updating status:', error)
     }
   }
 
-  const handleAcceptJob = (ticket: Ticket) => {
-    const updated = storage.updateTicket(
-      ticket.id,
-      { assignedTo: currentUser.name, status: 'in_progress' },
-      currentUser.name,
-      currentUser.role
-    )
+  const handleAcceptJob = async (ticket: Ticket) => {
+    try {
+      await updateTicketStatus(ticket.id, 'in_progress', currentUser.name)
+      
+      // Also update assignment if needed (though updateTicketStatus might not do that by default depending on implementation)
+      const { error } = await supabase
+        .from('incidents')
+        .update({ assigned_to: currentUser.name })
+        .eq('id', ticket.id)
 
-    if (updated) {
-      setTickets(storage.getTickets())
+      if (error) throw error
       alert('Job accepted!')
+
+    } catch (error) {
+      console.error('Error accepting job:', error)
     }
   }
 
-  // Home view
+  // --- VIEW: HOME ---
   if (currentView === 'home') {
     const inProgressCount = assignedTickets.filter((t) => t.status === 'in_progress').length
     const completedCount = assignedTickets.filter((t) => t.status === 'resolved').length
@@ -95,7 +135,10 @@ export default function FieldStaffInterface({ currentUser, onNavigate, currentVi
       <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto">
         {/* Welcome Card */}
         <Card className="bg-gradient-to-r from-emerald-500 to-teal-600 text-white p-6 md:p-8">
-          <h2 className="text-2xl md:text-3xl font-bold mb-2">Welcome, {currentUser.name}</h2>
+          <h2 className="text-2xl md:text-3xl font-bold mb-2 flex items-center gap-2">
+            Welcome, {currentUser.name}
+            {loading && <RefreshCw className="h-5 w-5 animate-spin text-white/80" />}
+          </h2>
           <p className="text-emerald-50">You have {inProgressCount} active tasks</p>
         </Card>
 
@@ -135,7 +178,7 @@ export default function FieldStaffInterface({ currentUser, onNavigate, currentVi
                 .filter((t) => t.status === 'in_progress')
                 .map((ticket) => (
                   <div key={ticket.id} onClick={() => setSelectedTicket(ticket)}>
-                    <TicketCard ticket={ticket} clickable />
+                    <TicketCard ticket={ticket} clickable onClick={() => setSelectedTicket(ticket)} />
                   </div>
                 ))}
             </div>
@@ -145,7 +188,7 @@ export default function FieldStaffInterface({ currentUser, onNavigate, currentVi
     )
   }
 
-  // Assigned Tasks view
+  // --- VIEW: ASSIGNED TASKS ---
   if (currentView === 'assigned') {
     return (
       <div className="p-4 md:p-6 max-w-4xl mx-auto overflow-y-auto space-y-6">
@@ -159,7 +202,6 @@ export default function FieldStaffInterface({ currentUser, onNavigate, currentVi
         {selectedTicket ? (
           <TaskDetailView
             ticket={selectedTicket}
-            currentUser={currentUser}
             onClose={() => setSelectedTicket(null)}
             onCommentAdd={handleAddComment}
             onStatusChange={handleStatusChange}
@@ -181,7 +223,7 @@ export default function FieldStaffInterface({ currentUser, onNavigate, currentVi
               <div className="space-y-3">
                 {assignedTickets.map((ticket) => (
                   <div key={ticket.id} onClick={() => setSelectedTicket(ticket)}>
-                    <TicketCard ticket={ticket} clickable />
+                    <TicketCard ticket={ticket} clickable onClick={() => setSelectedTicket(ticket)} />
                   </div>
                 ))}
               </div>
@@ -192,7 +234,7 @@ export default function FieldStaffInterface({ currentUser, onNavigate, currentVi
     )
   }
 
-  // Available Work view
+  // --- VIEW: AVAILABLE WORK ---
   if (currentView === 'available') {
     return (
       <div className="p-4 md:p-6 max-w-4xl mx-auto overflow-y-auto space-y-6">
@@ -232,7 +274,6 @@ export default function FieldStaffInterface({ currentUser, onNavigate, currentVi
 
 function TaskDetailView({
   ticket,
-  currentUser,
   onClose,
   onCommentAdd,
   onStatusChange,
@@ -242,7 +283,6 @@ function TaskDetailView({
   setNewStatus,
 }: {
   ticket: Ticket
-  currentUser: User
   onClose: () => void
   onCommentAdd: () => void
   onStatusChange: () => void
@@ -251,6 +291,8 @@ function TaskDetailView({
   newStatus: TicketStatus | ''
   setNewStatus: (value: TicketStatus | '') => void
 }) {
+  const inputClass = "flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+
   return (
     <div className="space-y-4">
       <Button variant="ghost" onClick={onClose} className="mb-4">
@@ -263,15 +305,17 @@ function TaskDetailView({
         <div className="border-t border-border pt-6 space-y-3">
           <h3 className="font-bold text-lg">Update Status</h3>
           <div className="flex gap-2 flex-col sm:flex-row">
-            <Select
+            {/* FIX: Native select to replace invalid Select component usage */}
+            <select
               value={newStatus}
-              onValueChange={(value) => setNewStatus(value as TicketStatus)}
-              className="flex-1"
+              onChange={(e) => setNewStatus(e.target.value as TicketStatus)}
+              className={`${inputClass} flex-1`}
+              aria-label="Change ticket status"
             >
               <option value="">Change status...</option>
               <option value="in_progress">In Progress</option>
               <option value="resolved">Mark as Resolved</option>
-            </Select>
+            </select>
             <Button onClick={onStatusChange} disabled={!newStatus} className="bg-primary hover:bg-orange-600">
               Update
             </Button>
@@ -313,7 +357,7 @@ function TaskDetailView({
           </div>
         </div>
 
-        <AuditTimeline auditLogs={ticket.audit} />
+        <AuditTimeline auditLogs={ticket.audit || []} />
       </Card>
     </div>
   )

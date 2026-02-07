@@ -6,6 +6,7 @@ instrumentation-client.js
 instrumentation-client.ts
 
 # Common ignores
+.env.local
 node_modules/
 .next/
 .env*.local

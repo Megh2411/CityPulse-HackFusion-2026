@@ -1,14 +1,26 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { User, Ticket, TicketStatus } from '@/lib/types'
-import { storage } from '@/lib/storage'
+import { supabase } from '@/lib/supabase'
+import { fetchTickets, updateTicketStatus } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
-import { IncidentStateMachine, getValidTransitions } from '@/lib/state-machine'
 import IncidentMap from '@/components/map/incident-map'
-import { CheckCircle, AlertCircle, Clock, Navigation, MessageSquare, MapPin } from 'lucide-react'
+import { CheckCircle, AlertCircle, Clock, MessageSquare, MapPin, RefreshCw } from 'lucide-react'
+import AuditTimeline from '@/components/tickets/audit-timeline'
+
+// Helper for state transitions (Local definition to ensure it works)
+const getValidTransitions = (status: TicketStatus): TicketStatus[] => {
+  switch (status) {
+    case 'assigned': return ['in_progress']
+    case 'in_progress': return ['on_hold', 'resolved']
+    case 'on_hold': return ['in_progress', 'resolved']
+    case 'resolved': return [] // Can't move from resolved
+    default: return []
+  }
+}
 
 interface FieldStaffEnhancedProps {
   currentUser: User
@@ -16,86 +28,106 @@ interface FieldStaffEnhancedProps {
 }
 
 export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaffEnhancedProps) {
-  const [tickets, setTickets] = useState(storage.getTickets())
+  // 1. STATE: Live data
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [loading, setLoading] = useState(true)
+  
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [view, setView] = useState<'list' | 'map' | 'detail'>('list')
   const [filterStatus, setFilterStatus] = useState<TicketStatus | 'all'>('all')
   const [newComment, setNewComment] = useState('')
-  const [showProgressModal, setShowProgressModal] = useState(false)
+
+  // 2. FETCH DATA & REALTIME
+  const loadData = async () => {
+    setLoading(true)
+    const data = await fetchTickets()
+    setTickets(data)
+    setLoading(false)
+    
+    // Update selected ticket reference if it exists
+    if (selectedTicket) {
+      const updated = data.find(t => t.id === selectedTicket.id)
+      if (updated) setSelectedTicket(updated)
+    }
+  }
+
+  useEffect(() => {
+    loadData()
+
+    const channel = supabase
+      .channel('field-staff-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'incidents' }, () => {
+        // Refresh full list on incident change
+        fetchTickets().then((data) => {
+          setTickets(data)
+          // Update selected ticket in view if open
+          if (selectedTicket) {
+             const updated = data.find(t => t.id === selectedTicket.id)
+             if (updated) setSelectedTicket(updated)
+          }
+        })
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, () => {
+        // Refresh on new comment
+        fetchTickets().then((data) => {
+          setTickets(data)
+          if (selectedTicket) {
+             const updated = data.find(t => t.id === selectedTicket.id)
+             if (updated) setSelectedTicket(updated)
+          }
+        })
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [selectedTicket?.id]) // Re-bind if selection changes to ensure correct updates
 
   const assignedTickets = tickets.filter((t) => t.assignedTo === currentUser.name && t.status !== 'closed')
-  const filtered =
-    filterStatus === 'all' ? assignedTickets : assignedTickets.filter((t) => t.status === filterStatus)
+  
+  const filtered = filterStatus === 'all' 
+    ? assignedTickets 
+    : assignedTickets.filter((t) => t.status === filterStatus)
 
-  const handleAcceptTicket = (ticket: Ticket) => {
-    const stateMachine = new IncidentStateMachine(ticket.status)
-    if (stateMachine.canTransitionTo('in_progress')) {
-      ticket.status = 'in_progress'
-      storage.addAuditLog(ticket.id, {
-        action: 'status_updated',
-        actor: currentUser.name,
-        actorRole: currentUser.role,
-        details: {
-          from: 'assigned',
-          to: 'in_progress',
-          timestamp: new Date().toISOString(),
-        },
-        fieldChanged: 'status',
-        oldValue: 'assigned',
-        newValue: 'in_progress',
-      })
-      setTickets(storage.getTickets())
+  // 3. ACTIONS
+  const handleAcceptTicket = async (ticket: Ticket) => {
+    try {
+      await updateTicketStatus(ticket.id, 'in_progress', currentUser.name)
+      // Realtime subscription will handle UI update
+    } catch (error) {
+      console.error('Error accepting ticket:', error)
     }
   }
 
-  const handleStatusTransition = (ticket: Ticket, newStatus: TicketStatus) => {
-    const stateMachine = new IncidentStateMachine(ticket.status)
-    if (stateMachine.canTransitionTo(newStatus)) {
-      ticket.status = newStatus
-      if (newStatus === 'resolved') {
-        ticket.resolvedBy = currentUser.name
-        ticket.resolvedAt = new Date().toISOString()
-      }
-      storage.addAuditLog(ticket.id, {
-        action: 'status_updated',
-        actor: currentUser.name,
-        actorRole: currentUser.role,
-        details: {
-          from: ticket.status,
-          to: newStatus,
-        },
-        fieldChanged: 'status',
-        oldValue: ticket.status,
-        newValue: newStatus,
-      })
-      setTickets(storage.getTickets())
-      setShowProgressModal(false)
+  const handleStatusTransition = async (ticket: Ticket, newStatus: TicketStatus) => {
+    try {
+      await updateTicketStatus(ticket.id, newStatus, currentUser.name)
+    } catch (error) {
+      console.error('Error updating status:', error)
     }
   }
 
-  const handleAddComment = (ticket: Ticket) => {
+  const handleAddComment = async (ticket: Ticket) => {
     if (!newComment.trim()) return
 
-    const comment = {
-      id: 'comment-' + Date.now(),
-      author: currentUser.name,
-      authorRole: currentUser.role,
-      content: newComment,
-      createdAt: new Date().toISOString(),
-      edited: false,
-    }
+    try {
+      const { error } = await supabase
+        .from('comments')
+        .insert({
+          incident_id: ticket.id,
+          author: currentUser.name,
+          author_role: currentUser.role,
+          content: newComment
+        })
 
-    ticket.comments.push(comment)
-    storage.addAuditLog(ticket.id, {
-      action: 'comment_added',
-      actor: currentUser.name,
-      actorRole: currentUser.role,
-      details: {
-        comment: newComment,
-      },
-    })
-    setNewComment('')
-    setTickets(storage.getTickets())
+      if (error) throw error
+      setNewComment('')
+      
+    } catch (error) {
+      console.error('Error adding comment:', error)
+      alert('Failed to add note')
+    }
   }
 
   const getPriorityColor = (severity: string) => {
@@ -108,6 +140,7 @@ export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaff
     return colors[severity] || 'bg-gray-100'
   }
 
+  // --- VIEW: MAP ---
   if (view === 'map') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50">
@@ -142,6 +175,7 @@ export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaff
     )
   }
 
+  // --- VIEW: DETAIL ---
   if (view === 'detail' && selectedTicket) {
     const validTransitions = getValidTransitions(selectedTicket.status)
 
@@ -216,24 +250,10 @@ export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaff
                 <p className="text-sm text-muted-foreground">Current Status</p>
                 <p className="text-foreground mt-1 capitalize">{selectedTicket.status.replace('_', ' ')}</p>
               </div>
-
-              {selectedTicket.estimatedCompletion && (
-                <div>
-                  <p className="text-sm text-muted-foreground">Est. Completion</p>
-                  <p className="text-foreground mt-1">{new Date(selectedTicket.estimatedCompletion).toLocaleDateString()}</p>
-                </div>
-              )}
-
-              {selectedTicket.onHoldReason && (
-                <div className="md:col-span-2">
-                  <p className="text-sm text-muted-foreground">Hold Reason</p>
-                  <p className="text-foreground mt-1">{selectedTicket.onHoldReason}</p>
-                </div>
-              )}
             </div>
 
             {/* Images */}
-            {selectedTicket.images.length > 0 && (
+            {selectedTicket.images && selectedTicket.images.length > 0 && (
               <div className="mb-6">
                 <p className="text-sm font-semibold text-foreground mb-3">Reported Photos ({selectedTicket.images.length})</p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -255,7 +275,7 @@ export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaff
                 <MessageSquare className="w-5 h-5" /> Progress Notes
               </h3>
 
-              {selectedTicket.comments.map((comment) => (
+              {selectedTicket.comments && selectedTicket.comments.map((comment) => (
                 <div key={comment.id} className="mb-4 p-3 bg-muted rounded">
                   <div className="flex items-center justify-between mb-2">
                     <p className="font-semibold text-foreground text-sm">{comment.author}</p>
@@ -267,7 +287,7 @@ export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaff
                 </div>
               ))}
 
-              <div className="flex gap-2">
+              <div className="flex gap-2 mt-4">
                 <Textarea
                   placeholder="Add progress note..."
                   value={newComment}
@@ -282,21 +302,29 @@ export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaff
                 </Button>
               </div>
             </div>
+            
+            {/* Audit Log */}
+            <div className="mt-8 border-t border-muted pt-6">
+               {selectedTicket.audit && <AuditTimeline auditLogs={selectedTicket.audit} />}
+            </div>
           </Card>
         </div>
       </div>
     )
   }
 
-  // List View
+  // --- VIEW: LIST (Default) ---
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-emerald-50 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
           <div>
-            <h1 className="text-3xl md:text-4xl font-bold text-foreground">My Assigned Tasks</h1>
-            <p className="text-muted-foreground mt-2">नमस्ते, {currentUser.name}! 🙏 Your work dashboard</p>
+            <h1 className="text-3xl md:text-4xl font-bold text-foreground flex items-center gap-2">
+              My Assigned Tasks
+              {loading && <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />}
+            </h1>
+            <p className="text-muted-foreground mt-2">Welcome, {currentUser.name}! 🙏 Your work dashboard</p>
           </div>
           <Button onClick={onLogout} className="w-full md:w-auto bg-destructive text-destructive-foreground">
             Logout
@@ -321,7 +349,9 @@ export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaff
 
         {/* Filter */}
         <div className="mb-6">
+          <label htmlFor="status-filter" className="sr-only">Filter Status</label>
           <select
+            id="status-filter"
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value as TicketStatus | 'all')}
             className="w-full md:w-64 px-4 py-2 border border-muted rounded-lg bg-white text-foreground"
@@ -375,55 +405,57 @@ export default function FieldStaffEnhanced({ currentUser, onLogout }: FieldStaff
                   severityOrder[b.severity as keyof typeof severityOrder]
               })
               .map((ticket) => (
-                <Card
-                  key={ticket.id}
+                <div 
+                  key={ticket.id} 
                   onClick={() => {
                     setSelectedTicket(ticket)
                     setView('detail')
                   }}
-                  className="p-4 cursor-pointer hover:shadow-lg transition border-l-4 border-primary"
+                  className="cursor-pointer"
                 >
-                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <h3 className="font-bold text-foreground">{ticket.title}</h3>
-                        <span className={`px-2 py-1 text-xs rounded-full font-bold ${getPriorityColor(ticket.severity)}`}>
-                          {ticket.severity}
-                        </span>
+                  <Card className="p-4 hover:shadow-lg transition border-l-4 border-primary">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <h3 className="font-bold text-foreground">{ticket.title}</h3>
+                          <span className={`px-2 py-1 text-xs rounded-full font-bold ${getPriorityColor(ticket.severity)}`}>
+                            {ticket.severity}
+                          </span>
+                        </div>
+                        <p className="text-sm text-muted-foreground mb-2">{ticket.ticketNumber}</p>
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <MapPin className="w-4 h-4" />
+                          <span>{ticket.location}</span>
+                        </div>
                       </div>
-                      <p className="text-sm text-muted-foreground mb-2">{ticket.ticketNumber}</p>
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <MapPin className="w-4 h-4" />
-                        <span>{ticket.location}</span>
-                      </div>
-                    </div>
 
-                    <div className="flex flex-col items-end gap-2">
-                      <span className={`px-3 py-1 text-xs rounded-full font-bold ${
-                        ticket.status === 'in_progress'
-                          ? 'bg-blue-100 text-blue-800'
-                          : ticket.status === 'on_hold'
-                            ? 'bg-yellow-100 text-yellow-800'
-                            : ticket.status === 'resolved'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-orange-100 text-orange-800'
-                      }`}>
-                        {ticket.status.replace('_', ' ')}
-                      </span>
-                      {ticket.status === 'assigned' && (
-                        <span className="text-xs text-muted-foreground flex items-center gap-1">
-                          <AlertCircle className="w-3 h-3" /> Pending
+                      <div className="flex flex-col items-end gap-2">
+                        <span className={`px-3 py-1 text-xs rounded-full font-bold ${
+                          ticket.status === 'in_progress'
+                            ? 'bg-blue-100 text-blue-800'
+                            : ticket.status === 'on_hold'
+                              ? 'bg-yellow-100 text-yellow-800'
+                              : ticket.status === 'resolved'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-orange-100 text-orange-800'
+                        }`}>
+                          {ticket.status.replace('_', ' ')}
                         </span>
-                      )}
-                      {ticket.estimatedCompletion && (
-                        <span className="text-xs text-muted-foreground flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {new Date(ticket.estimatedCompletion).toLocaleDateString()}
-                        </span>
-                      )}
+                        {ticket.status === 'assigned' && (
+                          <span className="text-xs text-muted-foreground flex items-center gap-1">
+                            <AlertCircle className="w-3 h-3" /> Pending
+                          </span>
+                        )}
+                        {ticket.estimatedCompletion && (
+                          <span className="text-xs text-muted-foreground flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {new Date(ticket.estimatedCompletion).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </Card>
+                  </Card>
+                </div>
               ))}
           </div>
         )}
