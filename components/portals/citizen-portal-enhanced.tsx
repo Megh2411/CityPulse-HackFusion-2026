@@ -13,16 +13,17 @@ import IncidentMap from '@/components/map/incident-map'
 import { detectDuplicates } from '@/lib/duplicate-detection'
 import { calculateCityAnalytics } from '@/lib/analytics'
 import { TimeSeriesChart, CategoryDistributionChart, SeverityDistributionChart } from '@/components/charts/incident-charts'
-import { MapPin, Send, Upload, AlertCircle, CheckCircle, Clock, TrendingUp, RefreshCw } from 'lucide-react'
+import { MapPin, Send, Upload, AlertCircle, CheckCircle, Clock, TrendingUp, RefreshCw, LogOut } from 'lucide-react'
 import AuditTimeline from '@/components/tickets/audit-timeline'
 
 interface CitizenPortalEnhancedProps {
   currentUser: User
   onNavigate: (view: string) => void
   currentView: string
+  onLogout: () => void
 }
 
-export default function CitizenPortalEnhanced({ currentUser, onNavigate, currentView }: CitizenPortalEnhancedProps) {
+export default function CitizenPortalEnhanced({ currentUser, onNavigate, currentView, onLogout }: CitizenPortalEnhancedProps) {
   // 1. STATE: Live data from Supabase
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [loading, setLoading] = useState(true)
@@ -161,12 +162,18 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
               </h1>
               <p className="text-muted-foreground mt-2">Real-time view of all reported incidents across your city</p>
             </div>
-            <button
-              onClick={() => onNavigate('report')}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition"
-            >
-              Report Incident
-            </button>
+            <div className="flex gap-2">
+              <Button
+                onClick={() => onNavigate('report')}
+                className="bg-primary text-primary-foreground hover:bg-primary/90 transition"
+              >
+                Report Incident
+              </Button>
+              <Button onClick={onLogout} variant="destructive">
+                <LogOut className="w-4 h-4 mr-2" />
+                Logout
+              </Button>
+            </div>
           </div>
 
           {/* Key Stats */}
@@ -334,7 +341,7 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
                 />
               </div>
 
-              {/* Category and Severity - Using Native Selects for A11y & Compatibility */}
+              {/* Category and Severity - Using Native Selects */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-foreground mb-2" htmlFor="category-select">Category *</label>
@@ -480,6 +487,10 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
             <Button onClick={() => onNavigate('report')} className="bg-primary text-primary-foreground">
               + New Report
             </Button>
+            <Button onClick={onLogout} variant="destructive">
+                <LogOut className="w-4 h-4 mr-2" />
+                Logout
+            </Button>
           </div>
         </div>
 
@@ -515,7 +526,7 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
               </button>
               <h2 className="text-2xl font-bold text-foreground mb-4">{selectedTicket.title}</h2>
               <p className="text-muted-foreground mb-6">{selectedTicket.ticketNumber}</p>
-              <AuditTimeline auditLogs={selectedTicket.audit} />
+              <AuditTimeline auditLogs={selectedTicket.audit || []} />
             </Card>
           </div>
         )}

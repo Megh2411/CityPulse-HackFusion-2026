@@ -12,7 +12,7 @@ import { Loader2 } from 'lucide-react'
 // Main App Controller
 function AppContent() {
   const { user, loading, signOut } = useAuth()
-  const [currentView, setCurrentView] = useState('home') // 'home' | 'incidents' | 'map' etc.
+  const [currentView, setCurrentView] = useState('home') 
 
   // 1. Loading State
   if (loading) {
@@ -38,7 +38,8 @@ function AppContent() {
         <OfficerDashboard 
           currentUser={user} 
           currentView={currentView === 'home' ? 'home' : currentView} 
-          onNavigate={setCurrentView} 
+          onNavigate={setCurrentView}
+          onLogout={signOut} // <--- Added
         />
       )
     
@@ -50,8 +51,9 @@ function AppContent() {
       return (
         <CitizenPortalEnhanced 
           currentUser={user} 
-          currentView={currentView === 'home' ? 'city-wide' : currentView} // Default citizen view
+          currentView={currentView === 'home' ? 'city-wide' : currentView} 
           onNavigate={setCurrentView} 
+          onLogout={signOut} // <--- Added
         />
       )
   }

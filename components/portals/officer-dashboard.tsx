@@ -11,15 +11,16 @@ import { Input } from '@/components/ui/input'
 import TicketCard from '@/components/tickets/ticket-card'
 import OfficerTaskManager from '@/components/portals/officer-task-manager'
 import AuditTimeline from '@/components/tickets/audit-timeline'
-import { Zap, AlertTriangle, Filter, Search, RefreshCw, BarChart, MapPin, MessageSquare, Clock } from 'lucide-react'
+import { Zap, AlertTriangle, Filter, Search, RefreshCw, BarChart, LogOut } from 'lucide-react'
 
 interface OfficerDashboardProps {
   currentUser: User
   onNavigate: (view: string) => void
   currentView: string
+  onLogout: () => void
 }
 
-export default function OfficerDashboard({ currentUser, onNavigate, currentView }: OfficerDashboardProps) {
+export default function OfficerDashboard({ currentUser, onNavigate, currentView, onLogout }: OfficerDashboardProps) {
   // 1. STATE: Live Data
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [loading, setLoading] = useState(true)
@@ -29,7 +30,7 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
   const [severityFilter, setSeverityFilter] = useState<string>('all')
   const [searchTerm, setSearchTerm] = useState('')
 
-  // Static users list
+  // Static users list from storage (Simulating user directory)
   const fieldStaff = storage.getUsers().filter((u) => u.role === 'field_staff')
 
   // 2. DATA FETCHING
@@ -39,7 +40,7 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
     setTickets(data)
     setLoading(false)
     
-    // Update selected ticket if open
+    // Keep selected ticket updated if it changes in background
     if (selectedTicket) {
       const updated = data.find(t => t.id === selectedTicket.id)
       if (updated) setSelectedTicket(updated)
@@ -119,7 +120,16 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
   if (currentView === 'home') {
     return (
       <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto">
-        {/* Dashboard Header */}
+        
+        {/* Header with Logout */}
+        <div className="flex justify-between items-center">
+           <h1 className="text-2xl font-bold text-foreground">Officer Dashboard</h1>
+           <Button onClick={onLogout} variant="destructive" size="sm">
+             <LogOut className="w-4 h-4 mr-2" /> Logout
+           </Button>
+        </div>
+
+        {/* Dashboard Card */}
         <Card className="bg-gradient-to-r from-primary to-secondary text-white p-6 md:p-8">
           <h2 className="text-2xl md:text-3xl font-bold mb-2 flex items-center gap-2">
             Operations Dashboard
@@ -155,7 +165,6 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
             All Incidents
           </Button>
           
-          {/* FIX: Correctly setting Severity Filter, not Status Filter */}
           <Button 
             onClick={() => {
               setSeverityFilter('critical')
@@ -225,7 +234,10 @@ export default function OfficerDashboard({ currentUser, onNavigate, currentView 
         <div className="flex flex-col gap-4">
           <div className="flex items-center justify-between">
              <h2 className="text-2xl md:text-3xl font-bold text-foreground">All Incidents</h2>
-             <Button variant="ghost" onClick={() => onNavigate('home')}>← Back</Button>
+             <div className="flex gap-2">
+               <Button variant="ghost" onClick={() => onNavigate('home')}>← Back</Button>
+               <Button onClick={onLogout} variant="destructive" size="sm">Logout</Button>
+             </div>
           </div>
 
           {/* Filters */}
