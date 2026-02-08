@@ -16,7 +16,7 @@ interface CitizenPortalProps {
   currentUser: User
   onNavigate: (view: string) => void
   currentView: string
-}
+} 
 
 export default function CitizenPortal({ currentUser, onNavigate, currentView }: CitizenPortalProps) {
   // 1. STATE: Live data

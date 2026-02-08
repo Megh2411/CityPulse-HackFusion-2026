@@ -71,6 +71,11 @@ import {
   Group,
   Building2,
   Users as UsersIcon,
+  BarChart3,
+  Cpu,
+  Target as TargetIcon,
+  Percent,
+  Home,
 } from "lucide-react";
 // Add this import at the top with your other imports
 import CalendarSchedulingModal from "../portals/CalendarSchedulingModal"; // Adjust path as needed
@@ -169,6 +174,10 @@ interface IncidentRow {
   is_team_assignment?: boolean;
   parent_ticket_id?: string;
   team_name?: string;
+  ml_analysis?: any;
+  ml_confidence_score?: number;
+  detection_count?: number;
+  coverage_ratio?: number;
 }
 
 // Interface for the profile row from Supabase
@@ -220,7 +229,6 @@ export default function OfficerTaskManager({
 }: OfficerTaskManagerProps) {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [fieldStaff, setFieldStaff] = useState<FieldStaffUser[]>([]);
-  const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -232,11 +240,12 @@ export default function OfficerTaskManager({
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
-  const [activeView, setActiveView] = useState<"tickets" | "staff" | "teams">(
-    "tickets",
-  );
+  const [activeView, setActiveView] = useState<"tickets" | "staff">("tickets");
   const [nearbyTickets, setNearbyTickets] = useState<NearbyTicket[]>([]);
   const [showGroupSuggestion, setShowGroupSuggestion] = useState(false);
+  const [selectedTicketsForGrouping, setSelectedTicketsForGrouping] = useState<
+    string[]
+  >([]);
 
   // Calendar states
   const [calendarModalOpen, setCalendarModalOpen] = useState(false);
@@ -261,6 +270,10 @@ export default function OfficerTaskManager({
   // Tax removal states
   const [showTaxRemovalWarning, setShowTaxRemovalWarning] = useState(false);
   const [ticketsWithTax, setTicketsWithTax] = useState<string[]>([]);
+
+  // Assignment loading state
+  const [assigning, setAssigning] = useState(false);
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
 
   // Calculate distance between two coordinates (Haversine formula)
   const calculateDistance = (
@@ -296,7 +309,8 @@ export default function OfficerTaskManager({
           t.id !== ticket.id &&
           t.latitude &&
           t.longitude &&
-          (t.status === "open" || t.status === "assigned"),
+          (t.status === "open" || t.status === "assigned" || t.status === "in_progress") &&
+          (!t.assignedTo || t.assignedTo.trim() === "") // Only show unassigned
       )
       .map((t) => ({
         ...t,
@@ -310,6 +324,41 @@ export default function OfficerTaskManager({
       .filter((t) => t.distance <= radiusKm)
       .sort((a, b) => a.distance - b.distance)
       .slice(0, 5); // Show top 5 nearby tickets
+  };
+
+  // Group multiple tickets together
+  const handleGroupTickets = (ticketIds: string[]) => {
+    setSelectedTicketsForGrouping(ticketIds);
+    // Find the main ticket (first selected or highest priority)
+    const mainTicket = tickets.find(t => t.id === ticketIds[0]);
+    if (mainTicket) {
+      setSelectedTicket(mainTicket);
+      // Update nearby tickets to show all selected tickets
+      const groupedNearbyTickets = tickets
+        .filter(t => ticketIds.includes(t.id) && t.id !== mainTicket.id)
+        .map(t => ({
+          ...t,
+          distance: calculateDistance(
+            mainTicket.latitude!,
+            mainTicket.longitude!,
+            t.latitude!,
+            t.longitude!,
+          ),
+        })) as NearbyTicket[];
+      setNearbyTickets(groupedNearbyTickets);
+      setShowGroupSuggestion(true);
+    }
+  };
+
+  // Toggle ticket selection for grouping
+  const toggleTicketForGrouping = (ticketId: string) => {
+    setSelectedTicketsForGrouping(prev => {
+      if (prev.includes(ticketId)) {
+        return prev.filter(id => id !== ticketId);
+      } else {
+        return [...prev, ticketId];
+      }
+    });
   };
 
   // Remove tax-related content from tickets
@@ -399,6 +448,45 @@ export default function OfficerTaskManager({
     );
   };
 
+  // Format ML analysis for display
+  const formatMLAnalysis = (mlAnalysis: any) => {
+    if (!mlAnalysis) return null;
+    
+    try {
+      if (typeof mlAnalysis === 'string') {
+        return JSON.parse(mlAnalysis);
+      }
+      return mlAnalysis;
+    } catch (error) {
+      console.error("Error parsing ML analysis:", error);
+      return null;
+    }
+  };
+
+  // Get ML analysis badge color based on confidence
+  const getMLConfidenceColor = (score: number) => {
+    if (score >= 0.8) return "bg-green-100 text-green-800 border-green-200";
+    if (score >= 0.6) return "bg-yellow-100 text-yellow-800 border-yellow-200";
+    if (score >= 0.4) return "bg-orange-100 text-orange-800 border-orange-200";
+    return "bg-red-100 text-red-800 border-red-200";
+  };
+
+  // Get ML detection count badge color
+  const getDetectionCountColor = (count: number) => {
+    if (count === 0) return "bg-gray-100 text-gray-800 border-gray-200";
+    if (count <= 3) return "bg-blue-100 text-blue-800 border-blue-200";
+    if (count <= 10) return "bg-yellow-100 text-yellow-800 border-yellow-200";
+    return "bg-red-100 text-red-800 border-red-200";
+  };
+
+  // Get coverage ratio badge color
+  const getCoverageRatioColor = (ratio: number) => {
+    if (ratio >= 0.8) return "bg-green-100 text-green-800 border-green-200";
+    if (ratio >= 0.5) return "bg-yellow-100 text-yellow-800 border-yellow-200";
+    if (ratio >= 0.2) return "bg-orange-100 text-orange-800 border-orange-200";
+    return "bg-red-100 text-red-800 border-red-200";
+  };
+
   // Load data with error handling
   const loadData = async () => {
     console.log("🔄 Starting to load data...");
@@ -406,7 +494,7 @@ export default function OfficerTaskManager({
     setError(null);
 
     try {
-      // Get tickets with location data
+      // Get tickets with location data and ML analysis
       console.log("📋 Fetching tickets...");
       const { data: ticketsData, error: ticketsError } = await supabase
         .from("incidents")
@@ -457,6 +545,10 @@ export default function OfficerTaskManager({
             isTeamAssignment: incident.is_team_assignment || false,
             parentTicketId: incident.parent_ticket_id || undefined,
             teamName: incident.team_name || undefined,
+            ml_analysis: formatMLAnalysis(incident.ml_analysis),
+            ml_confidence_score: incident.ml_confidence_score || 0,
+            detection_count: incident.detection_count || 0,
+            coverage_ratio: incident.coverage_ratio || 0,
           }),
         );
         setTickets(formattedTickets);
@@ -570,29 +662,6 @@ export default function OfficerTaskManager({
         console.log("⚠️ No field staff found");
         setFieldStaff([]);
       }
-
-      // Load teams (you might need to create a teams table)
-      console.log("🏢 Loading teams...");
-      // For now, we'll create mock teams based on staff
-      const mockTeams: Team[] = [
-        {
-          id: "team-1",
-          name: "Alpha Team",
-          members: fieldStaff.slice(0, 3).map((s) => s.name),
-          lead: fieldStaff[0]?.name || "",
-          department: "Field Operations",
-          capabilities: ["Maintenance", "Installation", "Emergency"],
-        },
-        {
-          id: "team-2",
-          name: "Bravo Team",
-          members: fieldStaff.slice(3, 6).map((s) => s.name),
-          lead: fieldStaff[3]?.name || "",
-          department: "Field Operations",
-          capabilities: ["Inspection", "Repair", "Survey"],
-        },
-      ];
-      setTeams(mockTeams);
 
       console.log("✅ All data loaded successfully!");
     } catch (error: any) {
@@ -773,7 +842,7 @@ export default function OfficerTaskManager({
     setCalendarModalOpen(true);
   };
 
-  // Handle assignment from calendar modal
+  // Handle assignment from calendar modal with timeout protection
   const handleAssignFromCalendar = async (
     staffName: string,
     startTime: Date,
@@ -785,133 +854,87 @@ export default function OfficerTaskManager({
   ) => {
     if (!selectedTicket) return;
 
+    console.log("📅 Starting assignment process...");
+    console.log("Staff:", staffName);
+    console.log("Start:", startTime);
+    console.log("Grouped tickets:", groupedTicketIds);
+    console.log("Selected for grouping:", selectedTicketsForGrouping);
+
+    // Set timeout to prevent infinite hanging
+    const timeoutId = setTimeout(() => {
+      console.warn("Assignment is taking too long, forcing reset...");
+      setAssigning(false);
+      setCalendarModalOpen(false);
+      setAssignModalOpen(false);
+      setSelectedTicket(null);
+      setSelectedTicketsForGrouping([]);
+      alert("Assignment timed out. Please try again.");
+    }, 30000); // 30 second timeout
+
+    setAssigning(true);
+    setAssignmentError(null);
+
     try {
-      // Generate new ticket number for team assignments
-      let newTicketNumber = selectedTicket.ticketNumber;
-      let masterTicketId = selectedTicket.id;
+      // Combine selected tickets for grouping with groupedTicketIds
+      const allTicketIds = [...new Set([
+        selectedTicket.id,
+        ...selectedTicketsForGrouping,
+        ...groupedTicketIds
+      ])];
 
-      if (teamAssignment && teamAssignment.memberNames.length > 1) {
-        // Get next ticket number
-        const { data: ticketData } = await supabase
-          .from("incidents")
-          .select("ticket_number")
-          .order("ticket_number", { ascending: false })
-          .limit(1)
-          .single();
+      console.log("Processing all tickets:", allTicketIds);
 
-        const nextTicketNumber = ticketData ? ticketData.ticket_number + 1 : 1;
-        newTicketNumber = `TKT-${nextTicketNumber.toString().padStart(6, "0")}-TEAM`;
+      // Process each ticket
+      for (const ticketId of allTicketIds) {
+        const ticket = tickets.find(t => t.id === ticketId);
+        if (!ticket) continue;
 
-        // Create master team ticket
-        const { data: masterTicket, error: masterError } = await supabase
-          .from("incidents")
-          .insert({
-            ticket_number: nextTicketNumber,
-            title: `[TEAM] ${selectedTicket.title}`,
-            description: `Team assignment for: ${selectedTicket.description}\n\nTeam: ${teamAssignment.teamName}\nLead: ${teamAssignment.leadStaff}\nMembers: ${teamAssignment.memberNames.join(", ")}`,
-            category: selectedTicket.category,
-            severity: selectedTicket.severity,
-            status: "assigned",
-            location: selectedTicket.location,
-            latitude: selectedTicket.latitude,
-            longitude: selectedTicket.longitude,
-            reported_by: selectedTicket.reportedBy,
-            assigned_to: teamAssignment.teamName,
-            is_team_assignment: true,
-            parent_ticket_id: selectedTicket.id,
-            team_name: teamAssignment.teamName,
-            scheduled_start: startTime.toISOString(),
-            scheduled_end: endTime.toISOString(),
-            estimated_duration_hours:
-              isMultiDay && multiDaySchedule
-                ? multiDaySchedule.totalHours
-                : Math.round(
-                    (endTime.getTime() - startTime.getTime()) /
-                      (1000 * 60 * 60),
-                  ),
-            priority: selectedTicket.priority,
-            tags: [...selectedTicket.tags, "team-assignment", "multi-staff"],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .select()
-          .single();
+        console.log(`Processing ticket: ${ticket.ticketNumber}`);
 
-        if (masterError) throw masterError;
-        if (masterTicket) {
-          masterTicketId = masterTicket.id;
+        // Calculate duration based on number of tickets
+        let estimatedDuration = Math.round(
+          (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60),
+        );
+        
+        // If multiple tickets, divide time equally
+        if (allTicketIds.length > 1) {
+          estimatedDuration = Math.round(estimatedDuration / allTicketIds.length);
         }
-      }
 
-      // Handle multi-day schedule
-      let scheduleEvents: any[] = [];
-
-      if (isMultiDay && multiDaySchedule) {
-        // Create events for each day in the multi-day schedule
-        scheduleEvents = multiDaySchedule.days.map((day, index) => ({
-          staff_id: fieldStaff.find((s) => s.name === staffName)?.id,
-          staff_name: staffName,
-          incident_id: masterTicketId,
-          event_type: "assignment",
-          title: `Task Day ${index + 1}: ${selectedTicket.title}`,
-          description: `Multi-day assignment - Day ${index + 1}/${multiDaySchedule.days.length}\nTeam: ${teamAssignment?.teamName || "Individual"}`,
-          start_time: day.startTime.toISOString(),
-          end_time: day.endTime.toISOString(),
-          location: selectedTicket.location,
-          status: "scheduled",
-          color: teamAssignment ? "#8b5cf6" : "#3b82f6",
-          created_by: currentUser.name,
-          day_number: index + 1,
-          total_days: multiDaySchedule.days.length,
-          is_multi_day: true,
-          team_name: teamAssignment?.teamName,
-        }));
-      } else {
-        // Single day assignment
-        scheduleEvents = [
-          {
-            staff_id: fieldStaff.find((s) => s.name === staffName)?.id,
-            staff_name: staffName,
-            incident_id: masterTicketId,
-            event_type: "assignment",
-            title: teamAssignment
-              ? `Team Task: ${selectedTicket.title}`
-              : `Task: ${selectedTicket.title}`,
-            description: teamAssignment
-              ? `Assigned to team ${teamAssignment.teamName} by ${currentUser.name}`
-              : `Assigned by ${currentUser.name}`,
-            start_time: startTime.toISOString(),
-            end_time: endTime.toISOString(),
-            location: selectedTicket.location,
-            status: "scheduled",
-            color: teamAssignment ? "#8b5cf6" : "#3b82f6",
-            created_by: currentUser.name,
-            team_name: teamAssignment?.teamName,
-          },
-        ];
-      }
-
-      // Update the main ticket (unless it's a team assignment where we created a new ticket)
-      if (!teamAssignment || teamAssignment.memberNames.length === 1) {
+        // Update ticket with assignment
         const updateData: any = {
-          assigned_to: teamAssignment ? teamAssignment.teamName : staffName,
+          assigned_to: staffName,
           status: "assigned",
           scheduled_start: startTime.toISOString(),
           scheduled_end: endTime.toISOString(),
-          estimated_duration_hours:
-            isMultiDay && multiDaySchedule
-              ? multiDaySchedule.totalHours
-              : Math.round(
-                  (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60),
-                ),
+          estimated_duration_hours: estimatedDuration,
           updated_at: new Date().toISOString(),
-          team_name: teamAssignment?.teamName,
         };
 
+        // Preserve images
+        if (ticket.images && ticket.images.length > 0) {
+          updateData.images = ticket.images;
+        }
+
+        // Preserve ML analysis data
+        if (ticket.ml_analysis) {
+          updateData.ml_analysis = ticket.ml_analysis;
+        }
+        if (ticket.ml_confidence_score !== undefined) {
+          updateData.ml_confidence_score = ticket.ml_confidence_score;
+        }
+        if (ticket.detection_count !== undefined) {
+          updateData.detection_count = ticket.detection_count;
+        }
+        if (ticket.coverage_ratio !== undefined) {
+          updateData.coverage_ratio = ticket.coverage_ratio;
+        }
+
         // Remove tax-related fields
-        if (hasTaxContent(selectedTicket)) {
+        if (hasTaxContent(ticket)) {
+          console.log(`Removing tax content from ${ticket.ticketNumber}`);
           updateData.tags =
-            selectedTicket.tags?.filter(
+            ticket.tags?.filter(
               (tag) =>
                 ![
                   "tax",
@@ -922,12 +945,12 @@ export default function OfficerTaskManager({
                 ].includes(tag.toLowerCase()),
             ) || [];
 
-          if (selectedTicket.category?.toLowerCase().includes("tax")) {
+          if (ticket.category?.toLowerCase().includes("tax")) {
             updateData.category = "Administrative";
           }
 
-          if (selectedTicket.description?.toLowerCase().includes("tax")) {
-            updateData.description = selectedTicket.description
+          if (ticket.description?.toLowerCase().includes("tax")) {
+            updateData.description = ticket.description
               .replace(/tax/gi, "fee")
               .replace(/Tax/gi, "Fee")
               .replace(/TAX/gi, "FEE");
@@ -937,208 +960,81 @@ export default function OfficerTaskManager({
         const { error: incidentError } = await supabase
           .from("incidents")
           .update(updateData)
-          .eq("id", selectedTicket.id);
+          .eq("id", ticketId);
 
-        if (incidentError) throw incidentError;
-      }
+        if (incidentError) {
+          console.error(`Error updating ticket ${ticket.ticketNumber}:`, incidentError);
+          throw incidentError;
+        }
 
-      // Insert all calendar events
-      for (const event of scheduleEvents) {
+        // Create calendar event
+        const calendarEvent = {
+          staff_id: fieldStaff.find((s) => s.name === staffName)?.id,
+          staff_name: staffName,
+          incident_id: ticketId,
+          event_type: "assignment",
+          title: `Task: ${ticket.title}`,
+          description: `Assigned by ${currentUser.name}`,
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString(),
+          location: ticket.location,
+          status: "scheduled",
+          color: "#3b82f6",
+          created_by: currentUser.name,
+        };
+
         const { error: eventError } = await supabase
           .from("calendar_events")
-          .insert(event);
+          .insert(calendarEvent);
 
-        if (eventError) throw eventError;
-      }
-
-      // If team assignment with multiple members, create individual assignments
-      if (teamAssignment && teamAssignment.memberNames.length > 1) {
-        for (const memberName of teamAssignment.memberNames) {
-          // Create individual ticket for each team member
-          const { data: memberTicketData } = await supabase
-            .from("incidents")
-            .select("ticket_number")
-            .order("ticket_number", { ascending: false })
-            .limit(1)
-            .single();
-
-          const memberTicketNumber = memberTicketData
-            ? memberTicketData.ticket_number + 1
-            : 1;
-
-          await supabase.from("incidents").insert({
-            ticket_number: memberTicketNumber,
-            title: `[SUB-TASK] ${selectedTicket.title}`,
-            description: `Team member assignment for: ${selectedTicket.description}\n\nPrimary: ${staffName}\nTeam: ${teamAssignment.teamName}\nRole: Team Member`,
-            category: selectedTicket.category,
-            severity: selectedTicket.severity,
-            status: "assigned",
-            location: selectedTicket.location,
-            latitude: selectedTicket.latitude,
-            longitude: selectedTicket.longitude,
-            reported_by: selectedTicket.reportedBy,
-            assigned_to: memberName,
-            parent_ticket_id: masterTicketId,
-            team_name: teamAssignment.teamName,
-            scheduled_start: startTime.toISOString(),
-            scheduled_end: endTime.toISOString(),
-            estimated_duration_hours:
-              isMultiDay && multiDaySchedule
-                ? multiDaySchedule.totalHours /
-                  teamAssignment.memberNames.length
-                : Math.round(
-                    (endTime.getTime() - startTime.getTime()) /
-                      (1000 * 60 * 60),
-                  ) / teamAssignment.memberNames.length,
-            priority: selectedTicket.priority,
-            tags: [...selectedTicket.tags, "sub-task", "team-member"],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          });
-
-          // Create calendar event for team member
-          await supabase.from("calendar_events").insert({
-            staff_id: fieldStaff.find((s) => s.name === memberName)?.id,
-            staff_name: memberName,
-            incident_id: masterTicketId,
-            event_type: "assignment",
-            title: `Team Task: ${selectedTicket.title}`,
-            description: `Team assignment with ${teamAssignment.teamName}`,
-            start_time: startTime.toISOString(),
-            end_time: endTime.toISOString(),
-            location: selectedTicket.location,
-            status: "scheduled",
-            color: "#10b981",
-            created_by: currentUser.name,
-            team_name: teamAssignment.teamName,
-          });
+        if (eventError) {
+          console.error(`Error creating calendar event for ${ticket.ticketNumber}:`, eventError);
+          throw eventError;
         }
+
+        // Log audit
+        await supabase.from("audit_logs").insert({
+          incident_id: ticketId,
+          action: isMultiDay ? "multi_day_assignment" : "assignment",
+          actor: currentUser.name,
+          actor_role: currentUser.role,
+          field_changed: "assigned_to",
+          old_value: ticket.assignedTo || "",
+          new_value: staffName,
+          timestamp: new Date().toISOString(),
+          details: {
+            isMultiDay,
+            groupedTickets: allTicketIds.length - 1,
+            taxRemoved: hasTaxContent(ticket),
+          },
+        });
       }
 
-      // Handle grouped tickets
-      if (groupedTicketIds.length > 0) {
-        const groupedStartTime = new Date(startTime);
-        let currentTime = new Date(startTime);
+      console.log("✅ Assignment completed successfully!");
 
-        for (const ticketId of groupedTicketIds) {
-          const groupedEndTime = new Date(currentTime);
-          groupedEndTime.setHours(currentTime.getHours() + 2);
-
-          const ticket = tickets.find((t) => t.id === ticketId);
-          if (ticket) {
-            // Update grouped ticket
-            const groupedUpdateData: any = {
-              assigned_to: teamAssignment ? teamAssignment.teamName : staffName,
-              status: "assigned",
-              scheduled_start: currentTime.toISOString(),
-              scheduled_end: groupedEndTime.toISOString(),
-              estimated_duration_hours: 2,
-              updated_at: new Date().toISOString(),
-              team_name: teamAssignment?.teamName,
-            };
-
-            // Remove tax from grouped tickets
-            if (hasTaxContent(ticket)) {
-              groupedUpdateData.tags =
-                ticket.tags?.filter(
-                  (tag) =>
-                    ![
-                      "tax",
-                      "tax-related",
-                      "financial",
-                      "taxation",
-                      "revenue",
-                    ].includes(tag.toLowerCase()),
-                ) || [];
-
-              if (ticket.category?.toLowerCase().includes("tax")) {
-                groupedUpdateData.category = "Administrative";
-              }
-
-              if (ticket.description?.toLowerCase().includes("tax")) {
-                groupedUpdateData.description = ticket.description
-                  .replace(/tax/gi, "fee")
-                  .replace(/Tax/gi, "Fee")
-                  .replace(/TAX/gi, "FEE");
-              }
-            }
-
-            await supabase
-              .from("incidents")
-              .update(groupedUpdateData)
-              .eq("id", ticketId);
-
-            // Create calendar event
-            await supabase.from("calendar_events").insert({
-              staff_id: fieldStaff.find((s) => s.name === staffName)?.id,
-              staff_name: staffName,
-              incident_id: ticketId,
-              event_type: "assignment",
-              title: `Grouped Task: ${ticket.title}`,
-              description: `Grouped with ${newTicketNumber}`,
-              start_time: currentTime.toISOString(),
-              end_time: groupedEndTime.toISOString(),
-              location: ticket.location,
-              status: "scheduled",
-              color: "#f59e0b",
-              created_by: currentUser.name,
-              team_name: teamAssignment?.teamName,
-            });
-          }
-
-          currentTime = new Date(groupedEndTime);
-        }
-      }
-
-      // Log audit
-      await supabase.from("audit_logs").insert({
-        incident_id: masterTicketId,
-        action: teamAssignment
-          ? "team_assignment"
-          : isMultiDay
-            ? "multi_day_assignment"
-            : "assignment",
-        actor: currentUser.name,
-        actor_role: currentUser.role,
-        field_changed: "assigned_to",
-        old_value: selectedTicket.assignedTo || "",
-        new_value: teamAssignment ? teamAssignment.teamName : staffName,
-        timestamp: new Date().toISOString(),
-        details: {
-          isMultiDay,
-          multiDaySchedule: multiDaySchedule
-            ? {
-                days: multiDaySchedule.days.length,
-                totalHours: multiDaySchedule.totalHours,
-              }
-            : undefined,
-          teamAssignment: teamAssignment
-            ? {
-                teamName: teamAssignment.teamName,
-                members: teamAssignment.memberNames.length,
-              }
-            : undefined,
-          groupedTickets: groupedTicketIds.length,
-          taxRemoved: hasTaxContent(selectedTicket),
-          newTicketNumber,
-        },
-      });
-
+      // Clean up and close modals
+      clearTimeout(timeoutId);
+      
       setCalendarModalOpen(false);
       setAssignModalOpen(false);
       setSelectedTicket(null);
       setSelectedStaffForCalendar(null);
+      setSelectedTicketsForGrouping([]);
       setNearbyTickets([]);
+      setAssigning(false);
 
-      const successMessage = teamAssignment
-        ? `Task assigned to team ${teamAssignment.teamName} (${teamAssignment.memberNames.length} members)!`
+      const successMessage = allTicketIds.length > 1
+        ? `${allTicketIds.length} tickets assigned to ${staffName}!`
         : `Task assigned to ${staffName}${isMultiDay ? " (Multi-day schedule)" : ""}!`;
 
       alert(successMessage);
       loadData();
-    } catch (error) {
-      console.error("Assignment failed:", error);
-      alert("Failed to assign ticket");
+    } catch (error: any) {
+      console.error("❌ Assignment failed:", error);
+      clearTimeout(timeoutId);
+      setAssignmentError(error.message || "Failed to assign ticket");
+      setAssigning(false);
+      alert(`Assignment failed: ${error.message}`);
     }
   };
 
@@ -1146,12 +1042,32 @@ export default function OfficerTaskManager({
   const handleQuickAssign = async (staffName: string) => {
     if (!selectedTicket) return;
 
+    setAssigning(true);
     try {
       const updateData: any = {
         assigned_to: staffName,
         status: "assigned",
         updated_at: new Date().toISOString(),
       };
+
+      // Preserve images
+      if (selectedTicket.images && selectedTicket.images.length > 0) {
+        updateData.images = selectedTicket.images;
+      }
+
+      // Preserve ML analysis data
+      if (selectedTicket.ml_analysis) {
+        updateData.ml_analysis = selectedTicket.ml_analysis;
+      }
+      if (selectedTicket.ml_confidence_score !== undefined) {
+        updateData.ml_confidence_score = selectedTicket.ml_confidence_score;
+      }
+      if (selectedTicket.detection_count !== undefined) {
+        updateData.detection_count = selectedTicket.detection_count;
+      }
+      if (selectedTicket.coverage_ratio !== undefined) {
+        updateData.coverage_ratio = selectedTicket.coverage_ratio;
+      }
 
       // Remove tax-related fields
       if (hasTaxContent(selectedTicket)) {
@@ -1202,10 +1118,13 @@ export default function OfficerTaskManager({
 
       setAssignModalOpen(false);
       setSelectedTicket(null);
+      setSelectedTicketsForGrouping([]);
+      setAssigning(false);
       alert(`Task assigned to ${staffName}`);
       loadData();
     } catch (error) {
       console.error("Assignment failed:", error);
+      setAssigning(false);
       alert("Failed to assign ticket");
     }
   };
@@ -1222,6 +1141,7 @@ export default function OfficerTaskManager({
   const handleTaxRemovalConfirm = async () => {
     if (!selectedTicket) return;
 
+    setAssigning(true);
     try {
       // Remove tax from selected ticket
       const success = await removeTaxFromTickets([selectedTicket.id]);
@@ -1239,6 +1159,8 @@ export default function OfficerTaskManager({
     } catch (error) {
       console.error("Tax removal error:", error);
       alert("Error removing tax content");
+    } finally {
+      setAssigning(false);
     }
   };
 
@@ -1277,6 +1199,7 @@ export default function OfficerTaskManager({
     return () => {
       console.log("🛑 Component unmounting, cleaning up...");
       supabase.removeChannel(channel);
+      setAssigning(false);
     };
   }, []);
 
@@ -1374,7 +1297,7 @@ export default function OfficerTaskManager({
               Try Again
             </Button>
             <Button onClick={onBack} variant="outline" className="w-full">
-              <ArrowLeft className="h-4 w-4 mr-2" />
+              <Home className="h-4 w-4 mr-2" />
               Back to Dashboard
             </Button>
           </div>
@@ -1393,7 +1316,7 @@ export default function OfficerTaskManager({
             onClick={onBack}
             className="gap-2 hover:bg-white hover:shadow-sm border border-gray-200 mb-6"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <Home className="h-4 w-4" />
             Back to Dashboard
           </Button>
 
@@ -1433,7 +1356,7 @@ export default function OfficerTaskManager({
               onClick={onBack}
               className="gap-2 hover:bg-white hover:shadow-sm border border-gray-200"
             >
-              <ArrowLeft className="h-4 w-4" />
+              <Home className="h-4 w-4" />
               Back to Dashboard
             </Button>
 
@@ -1463,7 +1386,7 @@ export default function OfficerTaskManager({
                   </h1>
                 </div>
                 <p className="text-gray-600">
-                  Assign and schedule tasks for field staff and teams
+                  Assign and schedule tasks for field staff
                 </p>
               </div>
 
@@ -1480,13 +1403,6 @@ export default function OfficerTaskManager({
                     {unassignedTickets.length}
                   </div>
                   <div className="text-sm text-gray-600">Need Assignment</div>
-                </div>
-                <div className="h-12 w-px bg-gray-300"></div>
-                <div className="text-right">
-                  <div className="text-2xl font-bold text-purple-600">
-                    {teams.length}
-                  </div>
-                  <div className="text-sm text-gray-600">Teams</div>
                 </div>
               </div>
             </div>
@@ -1508,14 +1424,6 @@ export default function OfficerTaskManager({
               >
                 <UsersIcon className="h-4 w-4" />
                 Field Staff ({fieldStaff.length})
-              </Button>
-              <Button
-                variant={activeView === "teams" ? "default" : "outline"}
-                onClick={() => setActiveView("teams")}
-                className="gap-2"
-              >
-                <Building2 className="h-4 w-4" />
-                Teams ({teams.length})
               </Button>
             </div>
           </div>
@@ -1629,6 +1537,7 @@ export default function OfficerTaskManager({
                     setSearchTerm("");
                     setStatusFilter("all");
                     setSeverityFilter("all");
+                    setSelectedTicketsForGrouping([]);
                   }}
                   className="h-11"
                   variant="outline"
@@ -1677,6 +1586,58 @@ export default function OfficerTaskManager({
               </Card>
             )}
 
+            {/* Grouping controls */}
+            {selectedTicketsForGrouping.length > 0 && (
+              <Card className="mb-6 border border-blue-200 bg-blue-50">
+                <div className="p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Group className="h-5 w-5 text-blue-600" />
+                    <div>
+                      <p className="font-medium text-blue-800">
+                        {selectedTicketsForGrouping.length} ticket
+                        {selectedTicketsForGrouping.length > 1 ? "s" : ""} selected for grouping
+                      </p>
+                      <p className="text-sm text-blue-600">
+                        These tickets will be assigned together
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-blue-300 text-blue-700 hover:bg-blue-100"
+                      onClick={() => setSelectedTicketsForGrouping([])}
+                    >
+                      Clear Selection
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="bg-blue-600 hover:bg-blue-700"
+                      onClick={() => {
+                        if (selectedTicketsForGrouping.length > 0) {
+                          const mainTicket = tickets.find(t => t.id === selectedTicketsForGrouping[0]);
+                          if (mainTicket) {
+                            handleOpenCalendarForAssignment(mainTicket);
+                          }
+                        }
+                      }}
+                      disabled={assigning}
+                    >
+                      {assigning ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        `Assign ${selectedTicketsForGrouping.length} Tickets`
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            )}
+
             {/* Unassigned Tickets */}
             <div className="mb-10">
               <div className="flex items-center justify-between mb-6">
@@ -1689,6 +1650,11 @@ export default function OfficerTaskManager({
                     {unassignedTickets.length}
                   </span>
                 </h2>
+                {selectedTicketsForGrouping.length > 0 && (
+                  <div className="text-sm text-gray-600">
+                    Select multiple tickets to assign together
+                  </div>
+                )}
               </div>
 
               {unassignedTickets.length === 0 ? (
@@ -1706,12 +1672,18 @@ export default function OfficerTaskManager({
                   {unassignedTickets.map((ticket) => (
                     <Card
                       key={ticket.id}
-                      className={`p-5 border border-gray-200 hover:border-blue-300 hover:shadow-lg transition-all cursor-pointer group ${
+                      className={`p-5 border ${selectedTicketsForGrouping.includes(ticket.id) ? 'border-blue-300 bg-blue-50' : 'border-gray-200'} hover:border-blue-300 hover:shadow-lg transition-all cursor-pointer group ${
                         hasTaxContent(ticket)
                           ? "border-l-4 border-l-amber-400"
                           : ""
                       }`}
-                      onClick={() => handleOpenCalendarForAssignment(ticket)}
+                      onClick={() => {
+                        if (selectedTicketsForGrouping.length > 0) {
+                          toggleTicketForGrouping(ticket.id);
+                        } else {
+                          handleOpenCalendarForAssignment(ticket);
+                        }
+                      }}
                     >
                       <div className="flex justify-between items-start mb-4">
                         <div className="flex-1">
@@ -1719,6 +1691,11 @@ export default function OfficerTaskManager({
                             {hasTaxContent(ticket) && (
                               <Badge className="bg-amber-100 text-amber-800 border-amber-200 px-2 py-1 rounded text-xs font-medium">
                                 Tax Content
+                              </Badge>
+                            )}
+                            {selectedTicketsForGrouping.includes(ticket.id) && (
+                              <Badge className="bg-blue-100 text-blue-800 border-blue-200 px-2 py-1 rounded text-xs font-medium">
+                                Selected for Grouping
                               </Badge>
                             )}
                             <Badge
@@ -1774,6 +1751,83 @@ export default function OfficerTaskManager({
                       <p className="text-sm text-gray-600 mb-4 line-clamp-2">
                         {ticket.description}
                       </p>
+
+                      {/* ML Analysis Section */}
+                      {(ticket.ml_analysis || ticket.ml_confidence_score || ticket.detection_count || ticket.coverage_ratio) && (
+                        <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Cpu className="h-4 w-4 text-purple-600" />
+                            <span className="text-sm font-medium text-gray-900">ML Analysis</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            {ticket.ml_confidence_score !== undefined && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-600">Confidence</span>
+                                <Badge className={`text-xs ${getMLConfidenceColor(ticket.ml_confidence_score)}`}>
+                                  {(ticket.ml_confidence_score * 100).toFixed(0)}%
+                                </Badge>
+                              </div>
+                            )}
+                            {ticket.detection_count !== undefined && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-600">Detections</span>
+                                <Badge className={`text-xs ${getDetectionCountColor(ticket.detection_count)}`}>
+                                  {ticket.detection_count}
+                                </Badge>
+                              </div>
+                            )}
+                            {ticket.coverage_ratio !== undefined && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-600">Coverage</span>
+                                <Badge className={`text-xs ${getCoverageRatioColor(ticket.coverage_ratio)}`}>
+                                  {(ticket.coverage_ratio * 100).toFixed(0)}%
+                                </Badge>
+                              </div>
+                            )}
+                            {ticket.ml_analysis && (
+                              <div className="col-span-2">
+                                <p className="text-xs text-gray-600 truncate">
+                                  {typeof ticket.ml_analysis === 'object' 
+                                    ? JSON.stringify(ticket.ml_analysis).slice(0, 100) + '...'
+                                    : ticket.ml_analysis.slice(0, 100) + '...'}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Images preview */}
+                      {ticket.images && ticket.images.length > 0 && (
+                        <div className="mb-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <ImageIcon className="h-4 w-4 text-gray-400" />
+                            <span className="text-xs font-medium text-gray-700">
+                              {ticket.images.length} image{ticket.images.length > 1 ? 's' : ''}
+                            </span>
+                          </div>
+                          <div className="flex gap-2 overflow-x-auto pb-2">
+                            {ticket.images.slice(0, 3).map((img, index) => (
+                              <div key={index} className="relative w-16 h-16 rounded border border-gray-200 overflow-hidden flex-shrink-0">
+                                <img 
+                                  src={img} 
+                                  alt={`Ticket image ${index + 1}`}
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    const target = e.target as HTMLImageElement;
+                                    target.src = `https://via.placeholder.com/64x64/cccccc/666666?text=Image+${index + 1}`;
+                                  }}
+                                />
+                                {index === 2 && ticket.images.length > 3 && (
+                                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                                    <span className="text-white text-xs">+{ticket.images.length - 3}</span>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-gray-500">
@@ -1863,14 +1917,7 @@ export default function OfficerTaskManager({
                         <div className="flex items-center text-sm">
                           <UserIcon className="h-4 w-4 text-gray-400 mr-2" />
                           <span className="text-gray-900 font-medium">
-                            {ticket.isTeamAssignment ? (
-                              <span className="flex items-center gap-1">
-                                <Building2 className="h-3 w-3" />
-                                {ticket.teamName || ticket.assignedTo}
-                              </span>
-                            ) : (
-                              ticket.assignedTo
-                            )}
+                            {ticket.assignedTo}
                           </span>
                         </div>
                         <div className="flex items-center text-sm">
@@ -1901,6 +1948,83 @@ export default function OfficerTaskManager({
                       <p className="text-sm text-gray-600 mb-4 line-clamp-2">
                         {ticket.description}
                       </p>
+
+                      {/* ML Analysis Section for Assigned Tickets */}
+                      {(ticket.ml_analysis || ticket.ml_confidence_score || ticket.detection_count || ticket.coverage_ratio) && (
+                        <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Cpu className="h-4 w-4 text-purple-600" />
+                            <span className="text-sm font-medium text-gray-900">ML Analysis</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            {ticket.ml_confidence_score !== undefined && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-600">Confidence</span>
+                                <Badge className={`text-xs ${getMLConfidenceColor(ticket.ml_confidence_score)}`}>
+                                  {(ticket.ml_confidence_score * 100).toFixed(0)}%
+                                </Badge>
+                              </div>
+                            )}
+                            {ticket.detection_count !== undefined && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-600">Detections</span>
+                                <Badge className={`text-xs ${getDetectionCountColor(ticket.detection_count)}`}>
+                                  {ticket.detection_count}
+                                </Badge>
+                              </div>
+                            )}
+                            {ticket.coverage_ratio !== undefined && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-600">Coverage</span>
+                                <Badge className={`text-xs ${getCoverageRatioColor(ticket.coverage_ratio)}`}>
+                                  {(ticket.coverage_ratio * 100).toFixed(0)}%
+                                </Badge>
+                              </div>
+                            )}
+                            {ticket.ml_analysis && (
+                              <div className="col-span-2">
+                                <p className="text-xs text-gray-600 truncate">
+                                  {typeof ticket.ml_analysis === 'object' 
+                                    ? JSON.stringify(ticket.ml_analysis).slice(0, 100) + '...'
+                                    : ticket.ml_analysis.slice(0, 100) + '...'}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Images preview for Assigned Tickets */}
+                      {ticket.images && ticket.images.length > 0 && (
+                        <div className="mb-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <ImageIcon className="h-4 w-4 text-gray-400" />
+                            <span className="text-xs font-medium text-gray-700">
+                              {ticket.images.length} image{ticket.images.length > 1 ? 's' : ''}
+                            </span>
+                          </div>
+                          <div className="flex gap-2 overflow-x-auto pb-2">
+                            {ticket.images.slice(0, 3).map((img, index) => (
+                              <div key={index} className="relative w-16 h-16 rounded border border-gray-200 overflow-hidden flex-shrink-0">
+                                <img 
+                                  src={img} 
+                                  alt={`Ticket image ${index + 1}`}
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    const target = e.target as HTMLImageElement;
+                                    target.src = `https://via.placeholder.com/64x64/cccccc/666666?text=Image+${index + 1}`;
+                                  }}
+                                />
+                                {index === 2 && ticket.images.length > 3 && (
+                                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                                    <span className="text-white text-xs">+{ticket.images.length - 3}</span>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-gray-500">
@@ -2048,7 +2172,7 @@ export default function OfficerTaskManager({
                           alert("No unassigned tickets available");
                         }
                       }}
-                      disabled={unassignedTickets.length === 0}
+                      disabled={unassignedTickets.length === 0 || assigning}
                     >
                       <CalendarIcon className="h-4 w-4 mr-2" />
                       Schedule & Assign
@@ -2057,139 +2181,9 @@ export default function OfficerTaskManager({
                       variant="ghost"
                       size="sm"
                       onClick={() => handleViewCalendar(staff)}
+                      disabled={assigning}
                     >
                       <Eye className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </Card>
-              ))
-            )}
-          </div>
-        )}
-
-        {/* Teams View */}
-        {activeView === "teams" && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {teams.length === 0 ? (
-              <div className="col-span-2">
-                <Card className="p-12 text-center">
-                  <Building2 className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-xl font-medium text-gray-900 mb-2">
-                    No Teams Configured
-                  </h3>
-                  <p className="text-gray-600">No teams found in the system.</p>
-                </Card>
-              </div>
-            ) : (
-              teams.map((team) => (
-                <Card
-                  key={team.id}
-                  className="p-6 border border-gray-200 hover:border-purple-300 transition-colors"
-                >
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-4">
-                      <div className="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500 to-purple-700 flex items-center justify-center text-white font-bold text-xl">
-                        {team.name.charAt(0)}
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-gray-900 text-lg">
-                          {team.name}
-                        </h3>
-                        <p className="text-sm text-gray-600">
-                          {team.department}
-                        </p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <Users className="h-3 w-3 text-gray-500" />
-                          <span className="text-xs text-gray-600">
-                            {team.members.length} members
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <Badge className="bg-gradient-to-r from-purple-600 to-purple-700">
-                      Team
-                    </Badge>
-                  </div>
-
-                  <div className="mb-4">
-                    <p className="text-sm font-medium text-gray-700 mb-2">
-                      Team Members:
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {team.members.map((member, index) => (
-                        <Badge
-                          key={index}
-                          variant="outline"
-                          className={`${
-                            member === team.lead
-                              ? "bg-purple-50 text-purple-700 border-purple-200"
-                              : "bg-gray-50 text-gray-700 border-gray-200"
-                          }`}
-                        >
-                          {member === team.lead ? "👑 " : ""}
-                          {member}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="mb-4">
-                    <p className="text-sm font-medium text-gray-700 mb-2">
-                      Capabilities:
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {team.capabilities.map((capability, index) => (
-                        <Badge
-                          key={index}
-                          variant="secondary"
-                          className="text-xs"
-                        >
-                          {capability}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="pt-4 border-t border-gray-200">
-                    <Button
-                      variant="outline"
-                      className="w-full"
-                      onClick={() => {
-                        const unassignedTicket = unassignedTickets[0];
-                        if (unassignedTicket) {
-                          setSelectedTicket(unassignedTicket);
-                          // Create a team assignment object
-                          const teamAssignment: TeamAssignment = {
-                            teamId: team.id,
-                            teamName: team.name,
-                            memberNames: team.members,
-                            leadStaff: team.lead,
-                          };
-                          // We'll need to pass this to the calendar modal
-                          // For now, we'll set it in sessionStorage and open calendar
-                          sessionStorage.setItem(
-                            "teamAssignment",
-                            JSON.stringify(teamAssignment),
-                          );
-                          setSelectedStaffForCalendar({
-                            ...fieldStaff.find((s) => s.name === team.lead)!,
-                            events: [],
-                            workload: {
-                              today_hours: 0,
-                              week_hours: 0,
-                              today_events: 0,
-                              week_events: 0,
-                            },
-                          } as StaffWithCalendar);
-                          setCalendarModalOpen(true);
-                        } else {
-                          alert("No unassigned tickets available");
-                        }
-                      }}
-                      disabled={unassignedTickets.length === 0}
-                    >
-                      <CalendarIcon className="h-4 w-4 mr-2" />
-                      Assign to Team
                     </Button>
                   </div>
                 </Card>
@@ -2246,13 +2240,22 @@ export default function OfficerTaskManager({
                   <Button
                     onClick={handleTaxRemovalConfirm}
                     className="flex-1 bg-amber-600 hover:bg-amber-700"
+                    disabled={assigning}
                   >
-                    Remove Tax & Continue
+                    {assigning ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Processing...
+                      </>
+                    ) : (
+                      "Remove Tax & Continue"
+                    )}
                   </Button>
                   <Button
                     variant="outline"
                     onClick={() => setShowTaxRemovalWarning(false)}
                     className="flex-1"
+                    disabled={assigning}
                   >
                     Cancel
                   </Button>
@@ -2270,10 +2273,10 @@ export default function OfficerTaskManager({
                 <div className="flex justify-between items-center mb-6">
                   <div>
                     <h3 className="text-xl font-bold text-gray-900">
-                      Assign Ticket
+                      Assign Ticket{selectedTicketsForGrouping.length > 0 ? ` (${selectedTicketsForGrouping.length + 1} tickets)` : ''}
                     </h3>
                     <p className="text-sm text-gray-600 mt-1">
-                      Select field staff member, team, and schedule time
+                      Select field staff member and schedule time
                     </p>
                   </div>
                   <Button
@@ -2283,8 +2286,10 @@ export default function OfficerTaskManager({
                       setAssignModalOpen(false);
                       setSelectedTicket(null);
                       setNearbyTickets([]);
+                      setSelectedTicketsForGrouping([]);
                     }}
                     className="h-8 w-8 p-0"
+                    disabled={assigning}
                   >
                     <X className="h-4 w-4" />
                   </Button>
@@ -2322,6 +2327,81 @@ export default function OfficerTaskManager({
                   </div>
                 </div>
 
+                {/* Selected Tickets for Grouping */}
+                {selectedTicketsForGrouping.length > 0 && (
+                  <Card className="mb-6 border border-blue-200">
+                    <div className="p-4 bg-blue-50 rounded-t-lg">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Group className="h-5 w-5 text-blue-600" />
+                        <h4 className="font-semibold text-gray-900">
+                          Selected for Grouping
+                        </h4>
+                        <Badge className="ml-auto bg-blue-600">
+                          {selectedTicketsForGrouping.length + 1} tickets
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-gray-600 mb-3">
+                        The following tickets will be assigned together:
+                      </p>
+                      <div className="space-y-2">
+                        {/* Main ticket */}
+                        <div className="flex items-center justify-between p-2 bg-white rounded border border-blue-300">
+                          <div>
+                            <p className="font-medium text-sm">
+                              {selectedTicket.title} (Main)
+                            </p>
+                            <p className="text-xs text-gray-600">
+                              {selectedTicket.ticketNumber}
+                            </p>
+                          </div>
+                          <Badge
+                            className={`text-xs ${getSeverityColor(selectedTicket.severity)}`}
+                          >
+                            {selectedTicket.severity}
+                          </Badge>
+                        </div>
+                        
+                        {/* Selected tickets */}
+                        {selectedTicketsForGrouping.map((ticketId) => {
+                          const ticket = tickets.find(t => t.id === ticketId);
+                          if (!ticket) return null;
+                          
+                          return (
+                            <div
+                              key={ticketId}
+                              className="flex items-center justify-between p-2 bg-white rounded border"
+                            >
+                              <div>
+                                <p className="font-medium text-sm">
+                                  {ticket.title}
+                                </p>
+                                <p className="text-xs text-gray-600">
+                                  {ticket.ticketNumber}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => toggleTicketForGrouping(ticketId)}
+                                  className="h-6 w-6 p-0"
+                                >
+                                  <X className="h-4 w-4 text-red-500" />
+                                </Button>
+                                <Badge
+                                  className={`text-xs ${getSeverityColor(ticket.severity)}`}
+                                >
+                                  {ticket.severity}
+                                </Badge>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </Card>
+                )}
+
                 {/* Nearby Tickets Suggestion */}
                 {showGroupSuggestion && nearbyTickets.length > 0 && (
                   <Card className="mb-6 border border-blue-200">
@@ -2341,7 +2421,7 @@ export default function OfficerTaskManager({
                         {nearbyTickets.map((ticket) => (
                           <div
                             key={ticket.id}
-                            className="flex items-center justify-between p-2 bg-white rounded border"
+                            className={`flex items-center justify-between p-2 rounded border ${selectedTicketsForGrouping.includes(ticket.id) ? 'bg-blue-100 border-blue-300' : 'bg-white border-gray-200'}`}
                           >
                             <div>
                               <p className="font-medium text-sm">
@@ -2352,6 +2432,18 @@ export default function OfficerTaskManager({
                               </p>
                             </div>
                             <div className="flex items-center gap-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => toggleTicketForGrouping(ticket.id)}
+                                className="h-6 w-6 p-0"
+                              >
+                                {selectedTicketsForGrouping.includes(ticket.id) ? (
+                                  <CheckSquare className="h-4 w-4 text-blue-600" />
+                                ) : (
+                                  <Plus className="h-4 w-4 text-gray-500" />
+                                )}
+                              </Button>
                               <Badge variant="outline" className="text-xs">
                                 {ticket.distance.toFixed(1)} km
                               </Badge>
@@ -2364,6 +2456,35 @@ export default function OfficerTaskManager({
                           </div>
                         ))}
                       </div>
+                      {selectedTicketsForGrouping.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-blue-200">
+                          <div className="flex gap-2">
+                            <Button
+                              className="flex-1 bg-blue-600 hover:bg-blue-700"
+                              onClick={() => {
+                                // Include all nearby tickets in selection
+                                const allNearbyIds = nearbyTickets.map(t => t.id);
+                                setSelectedTicketsForGrouping(prev => 
+                                  [...new Set([...prev, ...allNearbyIds])]
+                                );
+                              }}
+                              disabled={assigning}
+                            >
+                              <CheckSquare className="h-4 w-4 mr-2" />
+                              Select All Nearby
+                            </Button>
+                            <Button
+                              variant="outline"
+                              className="flex-1"
+                              onClick={() => setSelectedTicketsForGrouping([])}
+                              disabled={assigning}
+                            >
+                              <X className="h-4 w-4 mr-2" />
+                              Clear All
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </Card>
                 )}
@@ -2375,83 +2496,11 @@ export default function OfficerTaskManager({
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {/* Team Assignment Option */}
-                    <div>
-                      <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                        <Building2 className="h-4 w-4" />
-                        Assign to Team
-                      </h4>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-                        {teams.map((team) => (
-                          <Card
-                            key={team.id}
-                            className="p-4 border border-gray-200 hover:border-purple-300 hover:bg-purple-50 transition-all cursor-pointer"
-                            onClick={() => {
-                              // Create team assignment
-                              const teamAssignment: TeamAssignment = {
-                                teamId: team.id,
-                                teamName: team.name,
-                                memberNames: team.members,
-                                leadStaff: team.lead,
-                              };
-
-                              // Find lead staff for calendar
-                              const leadStaff = fieldStaff.find(
-                                (s) => s.name === team.lead,
-                              );
-                              if (leadStaff) {
-                                setSelectedStaffForCalendar({
-                                  ...leadStaff,
-                                  events: [],
-                                  workload: {
-                                    today_hours: 0,
-                                    week_hours: 0,
-                                    today_events: 0,
-                                    week_events: 0,
-                                  },
-                                } as StaffWithCalendar);
-                                setAssignModalOpen(false);
-                                setCalendarModalOpen(true);
-
-                                // Store team assignment in session for calendar modal
-                                sessionStorage.setItem(
-                                  "teamAssignment",
-                                  JSON.stringify(teamAssignment),
-                                );
-                              }
-                            }}
-                          >
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="font-medium text-gray-900">
-                                  {team.name}
-                                </p>
-                                <p className="text-sm text-gray-600">
-                                  {team.members.length} members
-                                </p>
-                              </div>
-                              <ChevronRight className="h-4 w-4 text-gray-400" />
-                            </div>
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {team.capabilities.slice(0, 3).map((cap, idx) => (
-                                <span
-                                  key={idx}
-                                  className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded"
-                                >
-                                  {cap}
-                                </span>
-                              ))}
-                            </div>
-                          </Card>
-                        ))}
-                      </div>
-                    </div>
-
                     {/* Individual Staff Assignment */}
                     <div>
                       <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
                         <UsersIcon className="h-4 w-4" />
-                        Assign to Individual Staff
+                        Assign to Staff Member
                       </h4>
                       <div className="space-y-3">
                         {fieldStaff.map((staff) => (
@@ -2459,6 +2508,7 @@ export default function OfficerTaskManager({
                             key={staff.id}
                             className="p-4 border rounded-lg hover:border-blue-300 hover:bg-gray-50 transition-all cursor-pointer"
                             onClick={() => {
+                              if (assigning) return;
                               setSelectedStaffForCalendar({
                                 ...staff,
                                 events: [],
@@ -2526,11 +2576,15 @@ export default function OfficerTaskManager({
             onClose={() => {
               setCalendarModalOpen(false);
               setSelectedStaffForCalendar(null);
-              sessionStorage.removeItem("teamAssignment");
+              setAssigning(false);
+              setSelectedTicketsForGrouping([]);
             }}
             onAssign={handleAssignFromCalendar}
             currentUser={currentUser}
             nearbyTickets={nearbyTickets}
+            isAssigning={assigning}
+            assignmentError={assignmentError}
+            selectedTicketsForGrouping={selectedTicketsForGrouping}
           />
         )}
 

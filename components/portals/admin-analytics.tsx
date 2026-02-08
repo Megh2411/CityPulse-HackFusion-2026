@@ -12,11 +12,13 @@ import {
   STATUS_CONFIG 
 } from '@/lib/types'
 import { supabase } from '@/lib/supabase'
-import { fetchTickets } from '@/lib/api'
+import { fetchTickets, fetchAuditLogs } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import AuditTimeline from '@/components/tickets/audit-timeline'
 import { Download, BarChart3, TrendingUp, Users, Calendar, RefreshCw, Brain } from 'lucide-react'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 import './AdminAnalytics.css' // Import CSS file
 
@@ -29,34 +31,48 @@ interface AdminAnalyticsProps {
 export default function AdminAnalytics({ currentUser, onNavigate, currentView }: AdminAnalyticsProps) {
   // 1. STATE: Live data from Supabase
   const [tickets, setTickets] = useState<Ticket[]>([])
+  const [auditLogs, setAuditLogs] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [reportPeriod, setReportPeriod] = useState<'daily' | 'weekly' | 'monthly'>('weekly')
 
   // 2. DATA FETCHING
   const loadData = async () => {
     setLoading(true)
-    const data = await fetchTickets()
-    setTickets(data)
+    const [ticketsData, auditData] = await Promise.all([
+      fetchTickets(),
+      fetchAuditLogs()
+    ])
+    setTickets(ticketsData)
+    setAuditLogs(auditData)
     setLoading(false)
   }
 
   useEffect(() => {
     loadData()
 
-    // Realtime Subscription
-    const channel = supabase
-      .channel('analytics-realtime')
+    // Realtime Subscription for incidents
+    const incidentsChannel = supabase
+      .channel('analytics-incidents-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'incidents' }, () => {
         fetchTickets().then(setTickets)
       })
       .subscribe()
 
+    // Realtime Subscription for audit logs
+    const auditChannel = supabase
+      .channel('analytics-audit-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => {
+        fetchAuditLogs().then(setAuditLogs)
+      })
+      .subscribe()
+
     return () => {
-      supabase.removeChannel(channel)
+      supabase.removeChannel(incidentsChannel)
+      supabase.removeChannel(auditChannel)
     }
   }, [])
 
-  // 3. DYNAMIC REPORT GENERATION (Replaces storage.generateReport)
+  // 3. DYNAMIC REPORT GENERATION
   const report = useMemo(() => {
     const now = new Date()
     const periodStart = new Date()
@@ -66,8 +82,11 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
     if (reportPeriod === 'monthly') periodStart.setMonth(now.getMonth() - 1)
 
     // Filter tickets by period
-    const periodTickets = tickets.filter(t => new Date(t.reportedAt) >= periodStart)
-    const resolvedTickets = periodTickets.filter(t => t.status === 'resolved')
+    const periodTickets = tickets.filter(t => {
+      const ticketDate = new Date(t.created_at)
+      return ticketDate >= periodStart
+    })
+    const resolvedTickets = periodTickets.filter(t => t.status === 'resolved' || t.status === 'closed')
     
     // Calculate Stats
     const totalTickets = periodTickets.length
@@ -78,8 +97,8 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
     // Calculate Avg Resolution Time
     let totalResolutionTime = 0
     resolvedTickets.forEach(t => {
-      if (t.resolved_at) {
-        const start = new Date(t.reportedAt).getTime()
+      if (t.resolved_at && t.created_at) {
+        const start = new Date(t.created_at).getTime()
         const end = new Date(t.resolved_at).getTime()
         totalResolutionTime += (end - start) / (1000 * 60 * 60) // Hours
       }
@@ -105,7 +124,7 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
         resolvedTickets: resolvedCount,
         inProgressTickets,
         averageResolutionTime,
-        fieldStaffUtilization: 85 // Mocked for now as we don't track hours per staff
+        fieldStaffUtilization: calculateFieldStaffUtilization(tickets)
       },
       categoryBreakdown,
       statusBreakdown,
@@ -113,27 +132,63 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
     }
   }, [tickets, reportPeriod])
 
-  const allAuditLogs = tickets
-    .flatMap((t) => t.audit.map(log => ({...log, ticketId: t.id, ticketTitle: t.title})))
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+  const calculateFieldStaffUtilization = (tickets: Ticket[]) => {
+    const assignedTickets = tickets.filter(t => t.assigned_to && t.status !== 'closed')
+    const totalTickets = tickets.length
+    return totalTickets > 0 ? Math.round((assignedTickets.length / totalTickets) * 100) : 0
+  }
 
-  const handleDownloadReport = () => {
-    const reportData = {
-      generatedAt: report.generatedAt,
-      period: reportPeriod,
-      stats: report.stats,
-      categoryBreakdown: report.categoryBreakdown,
-      severityBreakdown: report.severityBreakdown,
-      statusBreakdown: report.statusBreakdown,
-    }
-
-    const dataStr = JSON.stringify(reportData, null, 2)
-    const dataBlob = new Blob([dataStr], { type: 'application/json' })
-    const url = URL.createObjectURL(dataBlob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `citypulse-report-${reportPeriod}-${new Date().toISOString().split('T')[0]}.json`
-    link.click()
+  const handleDownloadPDF = () => {
+    const doc = new jsPDF()
+    
+    // Title
+    doc.setFontSize(20)
+    doc.text(`CityPulse Analytics Report - ${reportPeriod.toUpperCase()}`, 20, 20)
+    
+    // Report Details
+    doc.setFontSize(12)
+    doc.text(`Generated: ${new Date(report.generatedAt).toLocaleString()}`, 20, 35)
+    doc.text(`Period: ${reportPeriod}`, 20, 45)
+    
+    // Stats Section
+    doc.setFontSize(16)
+    doc.text('Key Metrics', 20, 60)
+    
+    const statsData = [
+      ['Total Incidents', report.stats.totalTickets],
+      ['Critical Incidents', report.stats.criticalTickets],
+      ['Resolved', report.stats.resolvedTickets],
+      ['In Progress', report.stats.inProgressTickets],
+      ['Avg Resolution Time', `${report.stats.averageResolutionTime}h`],
+      ['Field Staff Utilization', `${report.stats.fieldStaffUtilization}%`]
+    ]
+    
+    autoTable(doc, {
+      startY: 65,
+      head: [['Metric', 'Value']],
+      body: statsData,
+      theme: 'striped'
+    })
+    
+    // Category Breakdown
+    const categoryData = Object.entries(report.categoryBreakdown).map(([cat, count]) => [
+      CATEGORY_LABELS[cat as IncidentCategory]?.label || cat,
+      count,
+      `${getPercentage(count, report.stats.totalTickets)}%`
+    ])
+    
+    // Get the Y position after the first table
+    const finalY = (doc as any).lastAutoTable?.finalY || 65
+    
+    autoTable(doc, {
+      startY: finalY + 20,
+      head: [['Category', 'Count', 'Percentage']],
+      body: categoryData,
+      theme: 'grid'
+    })
+    
+    // Save PDF
+    doc.save(`citypulse-report-${reportPeriod}-${new Date().toISOString().split('T')[0]}.pdf`)
   }
 
   // Helper function to calculate percentage width for progress bars
@@ -278,7 +333,7 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
         </Card>
         
         {/* ML Analysis Metrics */}
-{tickets.some(t => t.ml_analysis) && (
+{tickets.some(t => t.ml_analysis || t.ml_confidence_score) && (
   <Card className="p-6 mt-4">
     <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
       <Brain className="h-5 w-5 text-purple-600" />
@@ -286,15 +341,20 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
     </h3>
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
       {(() => {
-        const mlTickets = tickets.filter(t => t.ml_analysis);
+        const mlTickets = tickets.filter(t => t.ml_analysis || t.ml_confidence_score);
         const avgPotholes = mlTickets.length > 0 
-          ? Math.round(mlTickets.reduce((sum, t) => sum + (t.ml_analysis?.num_potholes || 0), 0) / mlTickets.length)
+          ? Math.round(mlTickets.reduce((sum, t) => sum + (t.ml_analysis?.num_potholes || t.detection_count || 0), 0) / mlTickets.length)
           : 0;
         const avgConfidence = mlTickets.length > 0
-          ? Math.round(mlTickets.reduce((sum, t) => sum + (t.ml_confidence_score || 0) * 100, 0) / mlTickets.length)
+          ? Math.round(mlTickets.reduce((sum, t) => sum + ((t.ml_confidence_score || 0) * 100), 0) / mlTickets.length)
           : 0;
         const aiDetected = mlTickets.length;
-        const aiAccuracy = "92%"; // Mocked for demo
+        
+        // Calculate actual accuracy based on resolved tickets with AI analysis
+        const resolvedMlTickets = mlTickets.filter(t => t.status === 'resolved' || t.status === 'closed');
+        const aiAccuracy = resolvedMlTickets.length > 0
+          ? `${Math.round((resolvedMlTickets.length / mlTickets.length) * 100)}%`
+          : "N/A";
 
         return (
           <>
@@ -312,7 +372,7 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
             </div>
             <div className="text-center">
               <p className="text-2xl font-bold text-purple-600 mb-1">{aiAccuracy}</p>
-              <p className="text-xs text-muted-foreground">AI Accuracy</p>
+              <p className="text-xs text-muted-foreground">Accuracy Rate</p>
             </div>
           </>
         );
@@ -326,11 +386,11 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
           <div className="flex items-center justify-between flex-col sm:flex-row gap-4">
             <div>
               <h3 className="font-bold text-foreground mb-1">Export Report</h3>
-              <p className="text-sm text-muted-foreground">Download detailed analytics as JSON</p>
+              <p className="text-sm text-muted-foreground">Download detailed analytics as PDF</p>
             </div>
-            <Button onClick={handleDownloadReport} className="bg-emerald-600 hover:bg-emerald-700 text-white whitespace-nowrap">
+            <Button onClick={handleDownloadPDF} className="bg-emerald-600 hover:bg-emerald-700 text-white whitespace-nowrap">
               <Download className="h-4 w-4 mr-2" />
-              Download Report
+              Download PDF Report
             </Button>
           </div>
         </Card>
@@ -340,10 +400,6 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
           <Button onClick={() => onNavigate('audit')} variant="outline" className="h-12">
             <Users className="h-4 w-4 mr-2" />
             Audit Logs
-          </Button>
-          <Button onClick={() => onNavigate('reports')} variant="outline" className="h-12">
-            <BarChart3 className="h-4 w-4 mr-2" />
-            Reports
           </Button>
           <Button onClick={() => onNavigate('analytics')} variant="outline" className="h-12">
             <TrendingUp className="h-4 w-4 mr-2" />
@@ -356,6 +412,12 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
 
   // --- VIEW: AUDIT LOGS ---
   if (currentView === 'audit') {
+    // Combine audit logs from both dedicated table and ticket audit arrays
+    const allLogs = [
+      ...auditLogs,
+      ...tickets.flatMap((t) => t.audit.map(log => ({...log, ticketId: t.id, ticketTitle: t.title})))
+    ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
     return (
       <div className="p-4 md:p-6 max-w-4xl mx-auto overflow-y-auto space-y-6">
         <div className="flex items-center justify-between mb-4">
@@ -367,64 +429,17 @@ export default function AdminAnalytics({ currentUser, onNavigate, currentView }:
 
         <Card className="p-4 bg-blue-50 border-blue-200">
           <p className="text-sm text-foreground">
-            Total Activities: <span className="font-bold">{allAuditLogs.length}</span>
+            Total Activities: <span className="font-bold">{allLogs.length}</span>
           </p>
         </Card>
 
-        <AuditTimeline auditLogs={allAuditLogs.slice(0, 50)} />
+        <AuditTimeline auditLogs={allLogs.slice(0, 50)} />
 
-        {allAuditLogs.length > 50 && (
+        {allLogs.length > 50 && (
           <Card className="p-4 text-center">
             <p className="text-muted-foreground">Showing 50 most recent activities</p>
           </Card>
         )}
-      </div>
-    )
-  }
-
-  // --- VIEW: REPORTS ---
-  if (currentView === 'reports') {
-    return (
-      <div className="p-4 md:p-6 max-w-4xl mx-auto overflow-y-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-2xl md:text-3xl font-bold text-foreground">Reports</h2>
-          <Button onClick={() => onNavigate('home')} variant="outline">
-            ← Back
-          </Button>
-        </div>
-
-        <Card className="p-6 space-y-4">
-          <div className="flex justify-between items-start">
-            <div>
-              <h3 className="font-bold text-lg">Incident Report</h3>
-              <p className="text-sm text-muted-foreground">Period: {reportPeriod}</p>
-              <p className="text-sm text-muted-foreground">Generated: {new Date(report.generatedAt).toLocaleString()}</p>
-            </div>
-            <Button onClick={handleDownloadReport} className="bg-primary hover:bg-orange-600 text-white">
-              <Download className="h-4 w-4 mr-2" />
-              Export
-            </Button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 py-6 border-y border-border">
-            <div>
-              <p className="text-muted-foreground text-sm">Total Incidents</p>
-              <p className="text-3xl font-bold text-primary">{report.stats.totalTickets}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground text-sm">Resolved</p>
-              <p className="text-3xl font-bold text-emerald-600">{report.stats.resolvedTickets}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground text-sm">In Progress</p>
-              <p className="text-3xl font-bold text-orange-600">{report.stats.inProgressTickets}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground text-sm">Critical</p>
-              <p className="text-3xl font-bold text-red-600">{report.stats.criticalTickets}</p>
-            </div>
-          </div>
-        </Card>
       </div>
     )
   }

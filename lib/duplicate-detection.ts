@@ -19,7 +19,7 @@ export function detectDuplicates(newTicket: Ticket, existingTickets: Ticket[]): 
 
     // Consider it a potential duplicate if similarity > 60%
     if (similarity > 0.6) {
-      matches.push({
+      matches.push({ 
         ticketId: ticket.id,
         similarity: Math.round(similarity * 100),
         reason: getSimilarityReason(newTicket, ticket),

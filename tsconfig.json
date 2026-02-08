@@ -28,6 +28,7 @@
       ]
     }
   },
+  "types": ["jspdf", "jspdf-autotable"],
   "include": [
     "next-env.d.ts",
     "**/*.ts",

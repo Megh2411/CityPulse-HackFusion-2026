@@ -409,39 +409,10 @@ const handleSubmitReport = async () => {
             <Card className="p-6 hover:shadow-lg transition-shadow">
               <CategoryDistributionChart analytics={analytics} />
             </Card>
-            <Card className="p-6 hover:shadow-lg transition-shadow">
-              <SeverityDistributionChart analytics={analytics} />
-            </Card>
           </div>
 
           {/* Critical Areas */}
-          {analytics.criticalAreas.length > 0 && (
-            <Card className="p-6 mb-8 hover:shadow-lg transition-shadow">
-              <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-red-600" />
-                Critical Areas (High Activity)
-              </h2>
-              <div className="space-y-2">
-                {analytics.criticalAreas.map((area, idx) => (
-                  <div key={idx} className="flex items-center justify-between p-3 bg-red-50 rounded-lg border border-red-200 hover:bg-red-100 transition-colors">
-                    <div className="flex items-center gap-2">
-                      <MapPin className="w-5 h-5 text-red-600" />
-                      <div>
-                        <p className="font-semibold text-gray-900">
-                          {area.latitude.toFixed(4)}, {area.longitude.toFixed(4)}
-                        </p>
-                        <p className="text-sm text-gray-600">{area.category}</p>
-                      </div>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-2xl font-bold text-red-600">{area.incidentCount}</p>
-                      <p className="text-xs text-gray-600">{area.severity}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
+          
         </div>
       </div>
     )
@@ -703,7 +674,7 @@ const handleSubmitReport = async () => {
 
               {/* Camera Photo Capture */}
               <div>
-                <Label className="text-gray-900 font-medium mb-2">Evidence Photos (Optional)</Label>
+                <Label className="text-gray-900 font-medium mb-2">Evidence Photos</Label>
                 
                 {formData.category === 'pothole' && (
                   <div className="mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
@@ -712,7 +683,7 @@ const handleSubmitReport = async () => {
                       <span className="text-sm font-medium text-blue-800">AI Pothole Detection Available</span>
                     </div>
                     <p className="text-sm text-blue-700">
-                      Take a photo of potholes for automatic severity analysis
+                      Upload/Take a photo of potholes for automatic severity analysis
                     </p>
                   </div>
                 )}
