@@ -36,13 +36,17 @@ import {
   Home,
   FileText,
   ChevronLeft,
-  Navigation
+  Navigation,
+  Map,
+  AlertOctagon
 } from 'lucide-react'
 import AuditTimeline from '@/components/tickets/audit-timeline'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { calculateDistance } from '@/lib/utils/geoUtils'
 
 interface CitizenPortalEnhancedProps {
   currentUser: User
@@ -76,6 +80,11 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     annotated_image?: string;
   } | null>(null)
   const [showMlAnalysis, setShowMlAnalysis] = useState(false)
+
+  // Geographic Duplicate Detection State
+  const [nearbyIncidents, setNearbyIncidents] = useState<Ticket[]>([])
+  const [showNearbyDialog, setShowNearbyDialog] = useState(false)
+  const [duplicateRadius, setDuplicateRadius] = useState<number>(100) // meters
 
   const [formData, setFormData] = useState({
     title: '',
@@ -129,6 +138,9 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
           longitude,
           location: prev.location || `📍 GPS: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
         }))
+        
+        // Check for nearby incidents when location is obtained
+        checkForNearbyIncidents(latitude, longitude)
       },
       (err) => {
         console.error("Location error:", err)
@@ -137,39 +149,69 @@ export default function CitizenPortalEnhanced({ currentUser, onNavigate, current
     )
   }
 
-  // --- ML ANALYSIS LOGIC ---
-  // Replace the existing analyzeImageWithML function with:
-const analyzeImageWithML = async (imageData: string) => {
-  setIsAnalyzing(true);
-  setShowMlAnalysis(true);
-  
-  try {
-    // Convert base64 to blob
-    const base64Response = await fetch(imageData);
-    const blob = await base64Response.blob();
+  // Function to check for nearby incidents
+  const checkForNearbyIncidents = (lat: number, lng: number) => {
+    const nearby: Ticket[] = []
     
-    // Create File object
-    const file = new File([blob], 'captured_image.jpg', { type: 'image/jpeg' });
+    tickets.forEach(ticket => {
+      if (ticket.latitude && ticket.longitude) {
+        const distance = calculateDistance(
+          lat, lng,
+          ticket.latitude, ticket.longitude
+        )
+        
+        // Check if within radius (default 100 meters)
+        if (distance <= duplicateRadius && ticket.category === formData.category) {
+          nearby.push(ticket)
+        }
+      }
+    })
     
-    // Call ML service
-    const analysis = await analyzePotholeImage(file);
-    
-    // Update form with ML-determined severity
-    setFormData(prev => ({
-      ...prev,
-      severity: analysis.severity,
-      title: prev.title || `Pothole detected: ${analysis.num_potholes} holes`
-    }));
-    
-    setMlAnalysis(analysis);
-    
-  } catch (error) {
-    console.error('ML Analysis failed:', error);
-    alert('AI analysis failed. You can still submit manually.');
-  } finally {
-    setIsAnalyzing(false);
+    if (nearby.length > 0) {
+      setNearbyIncidents(nearby)
+      setShowNearbyDialog(true)
+    }
   }
-};
+
+  // Function to check duplicates when category changes
+  const checkCategoryDuplicates = () => {
+    if (formData.latitude && formData.longitude) {
+      checkForNearbyIncidents(formData.latitude, formData.longitude)
+    }
+  }
+
+  // ML ANALYSIS LOGIC
+  const analyzeImageWithML = async (imageData: string) => {
+    setIsAnalyzing(true);
+    setShowMlAnalysis(true);
+    
+    try {
+      // Convert base64 to blob
+      const base64Response = await fetch(imageData);
+      const blob = await base64Response.blob();
+      
+      // Create File object
+      const file = new File([blob], 'captured_image.jpg', { type: 'image/jpeg' });
+      
+      // Call ML service
+      const analysis = await analyzePotholeImage(file);
+      
+      // Update form with ML-determined severity
+      setFormData(prev => ({
+        ...prev,
+        severity: analysis.severity,
+        title: prev.title || `Pothole detected: ${analysis.num_potholes} holes`
+      }));
+      
+      setMlAnalysis(analysis);
+      
+    } catch (error) {
+      console.error('ML Analysis failed:', error);
+      alert('AI analysis failed. You can still submit manually.');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   // --- CAMERA LOGIC ---
   const startCamera = async () => {
@@ -243,82 +285,186 @@ const analyzeImageWithML = async (imageData: string) => {
     reader.readAsDataURL(file)
   }
 
-  // Replace ONLY the handleSubmitReport function in citizen-portal-enhanced.tsx
+  // SUBMIT REPORT WITH DUPLICATE CHECK
+  const handleSubmitReport = async () => {
+    if (!formData.title || !formData.description || !formData.location) {
+      alert('Please fill in all required fields');
+      return;
+    }
 
-const handleSubmitReport = async () => {
-  if (!formData.title || !formData.description || !formData.location) {
-    alert('Please fill in all required fields');
-    return;
-  }
+    // Validate that we have images if ML analysis was performed
+    if (uploadedImages.length === 0 && formData.category === 'pothole') {
+      alert('Please upload at least one image for pothole detection');
+      return;
+    }
 
-  // Validate that we have images if ML analysis was performed
-  if (uploadedImages.length === 0 && formData.category === 'pothole') {
-    alert('Please upload at least one image for pothole detection');
-    return;
-  }
-
-  try {
-    console.log('Submitting report with data:', formData);
-    console.log('Number of images:', uploadedImages.length);
-    
-    // Convert base64 images to File objects
-    const imageFiles: File[] = [];
-    for (let i = 0; i < uploadedImages.length; i++) {
-      const img = uploadedImages[i];
-      if (img.startsWith('data:')) {
-        const base64Response = await fetch(img);
-        const blob = await base64Response.blob();
-        const file = new File([blob], `image_${i}.jpg`, { type: 'image/jpeg' });
-        imageFiles.push(file);
+    try {
+      console.log('Submitting report with data:', formData);
+      console.log('Number of images:', uploadedImages.length);
+      
+      // Convert base64 images to File objects
+      const imageFiles: File[] = [];
+      for (let i = 0; i < uploadedImages.length; i++) {
+        const img = uploadedImages[i];
+        if (img.startsWith('data:')) {
+          const base64Response = await fetch(img);
+          const blob = await base64Response.blob();
+          const file = new File([blob], `image_${i}.jpg`, { type: 'image/jpeg' });
+          imageFiles.push(file);
+        }
       }
-    }
 
-    console.log('Converted to File objects:', imageFiles.length);
+      console.log('Converted to File objects:', imageFiles.length);
 
-    // Use the ML integration function
-    const result = await submitIncidentWithML(
-      {
-        title: formData.title,
-        description: formData.description,
-        category: formData.category,
-        location: formData.location,
-        latitude: formData.latitude,
-        longitude: formData.longitude,
-        reported_by: currentUser.name,
-        images: imageFiles
-      },
-      currentUser.id || 'anonymous'
-    );
+      // Use the ML integration function
+      const result = await submitIncidentWithML(
+        {
+          title: formData.title,
+          description: formData.description,
+          category: formData.category,
+          location: formData.location,
+          latitude: formData.latitude,
+          longitude: formData.longitude,
+          reported_by: currentUser.name,
+          images: imageFiles
+        },
+        currentUser.id || 'anonymous'
+      );
 
-    if (result.success) {
-      console.log('Report submitted successfully:', result);
+      if (result.success) {
+        console.log('Report submitted successfully:', result);
+        
+        // Reset form
+        setFormData({
+          title: '',
+          description: '',
+          category: 'pothole',
+          severity: 'medium',
+          location: '',
+          latitude: 19.0760,
+          longitude: 72.8777,
+        });
+        setUploadedImages([]);
+        setDuplicateMatches([]);
+        setMlAnalysis(null);
+        setShowMlAnalysis(false);
+        setNearbyIncidents([]);
+        setShowNearbyDialog(false);
+        
+        alert('✅ Report submitted successfully! Admin will review the AI analysis.');
+        onNavigate('my-reports');
+      } else {
+        throw new Error(result.error || 'Submission failed');
+      }
       
-      // Reset form
-      setFormData({
-        title: '',
-        description: '',
-        category: 'pothole',
-        severity: 'medium',
-        location: '',
-        latitude: 19.0760,
-        longitude: 72.8777,
-      });
-      setUploadedImages([]);
-      setDuplicateMatches([]);
-      setMlAnalysis(null);
-      setShowMlAnalysis(false);
-      
-      alert('✅ Report submitted successfully! Admin will review the AI analysis.');
-      onNavigate('my-reports');
-    } else {
-      throw new Error(result.error || 'Submission failed');
+    } catch (err) {
+      console.error('Error creating ticket:', err);
+      alert('❌ Failed to submit report. Please try again.');
     }
-    
-  } catch (err) {
-    console.error('Error creating ticket:', err);
-    alert('❌ Failed to submit report. Please try again.');
-  }
-};
+  };
+
+  // --- NEARBY INCIDENTS DIALOG ---
+  const NearbyIncidentsDialog = () => (
+    <Dialog open={showNearbyDialog} onOpenChange={setShowNearbyDialog}>
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <AlertOctagon className="h-5 w-5 text-amber-600" />
+            Similar Report Already Exists Nearby
+          </DialogTitle>
+          <DialogDescription>
+            We found {nearbyIncidents.length} existing incident(s) within {duplicateRadius}m of your location.
+            Please review to avoid duplicate reporting.
+          </DialogDescription>
+        </DialogHeader>
+        
+        <div className="space-y-3 py-4">
+          {nearbyIncidents.slice(0, 3).map((incident, index) => (
+            <Card key={incident.id} className="p-4 border-amber-200 bg-amber-50">
+              <div className="flex items-start justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className={
+                      incident.status === 'resolved' ? 'bg-green-100 text-green-800' :
+                      incident.status === 'in_progress' ? 'bg-blue-100 text-blue-800' :
+                      'bg-amber-100 text-amber-800'
+                    }>
+                      {incident.status.replace('_', ' ').toUpperCase()}
+                    </Badge>
+                    <Badge variant="outline" className={
+                      incident.severity === 'critical' ? 'bg-red-100 text-red-800' :
+                      incident.severity === 'high' ? 'bg-orange-100 text-orange-800' :
+                      incident.severity === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-green-100 text-green-800'
+                    }>
+                      {incident.severity.toUpperCase()}
+                    </Badge>
+                  </div>
+                  <h4 className="font-semibold text-gray-900">{incident.title}</h4>
+                  <p className="text-sm text-gray-600">{incident.description?.substring(0, 100)}...</p>
+                  <div className="flex items-center gap-2 text-xs text-gray-500">
+                    <MapPin className="h-3 w-3" />
+                    {calculateDistance(
+                      formData.latitude, formData.longitude,
+                      incident.latitude, incident.longitude
+                    ).toFixed(0)}m away
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Reported: {new Date(incident.createdAt).toLocaleDateString()}
+                  </p>
+                </div>
+                <Button 
+                  size="sm" 
+                  variant="ghost"
+                  onClick={() => {
+                    setSelectedTicket(incident)
+                    setShowNearbyDialog(false)
+                  }}
+                >
+                  View Details
+                </Button>
+              </div>
+            </Card>
+          ))}
+          
+          {nearbyIncidents.length > 3 && (
+            <div className="text-center text-sm text-gray-500">
+              + {nearbyIncidents.length - 3} more incident(s) nearby
+            </div>
+          )}
+        </div>
+        
+        <DialogFooter className="flex flex-col sm:flex-row gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setShowNearbyDialog(false)}
+            className="flex-1"
+          >
+            Cancel Report
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setDuplicateRadius(duplicateRadius * 2) // Double the radius
+              checkForNearbyIncidents(formData.latitude, formData.longitude)
+            }}
+            className="flex-1"
+          >
+            Search Wider Area
+          </Button>
+          <Button
+            onClick={() => {
+              setShowNearbyDialog(false)
+              handleSubmitReport()
+            }}
+            className="flex-1 bg-amber-600 hover:bg-amber-700"
+          >
+            Continue Anyway
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 
   // --- VIEW: CITY WIDE ---
   if (currentView === 'city-wide') {
@@ -410,9 +556,6 @@ const handleSubmitReport = async () => {
               <CategoryDistributionChart analytics={analytics} />
             </Card>
           </div>
-
-          {/* Critical Areas */}
-          
         </div>
       </div>
     )
@@ -519,6 +662,31 @@ const handleSubmitReport = async () => {
             </Card>
           )}
 
+          {/* Nearby Incidents Warning */}
+          {nearbyIncidents.length > 0 && !showNearbyDialog && (
+            <Card className="mb-6 border-amber-200 bg-amber-50 hover:shadow-lg transition-shadow">
+              <div className="p-4">
+                <div className="flex items-center gap-3">
+                  <AlertOctagon className="h-5 w-5 text-amber-600" />
+                  <div className="flex-1">
+                    <h4 className="font-medium text-amber-800">Similar report exists nearby</h4>
+                    <p className="text-sm text-amber-700">
+                      {nearbyIncidents.length} incident(s) found within {duplicateRadius}m. Check if yours is a duplicate.
+                    </p>
+                  </div>
+                  <Button 
+                    size="sm" 
+                    variant="outline" 
+                    onClick={() => setShowNearbyDialog(true)}
+                    className="border-amber-300 text-amber-700"
+                  >
+                    Review
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          )}
+
           {/* Duplicate Warning */}
           {duplicateMatches.length > 0 && (
             <Card className="p-6 mb-6 border-yellow-200 bg-yellow-50">
@@ -587,6 +755,8 @@ const handleSubmitReport = async () => {
                       setFormData({ ...formData, category: value as IncidentCategory })
                       setMlAnalysis(null)
                       setShowMlAnalysis(false)
+                      // Check for duplicates when category changes
+                      setTimeout(checkCategoryDuplicates, 100)
                     }}
                   >
                     <SelectTrigger id="category-select" className="h-12">
@@ -669,6 +839,15 @@ const handleSubmitReport = async () => {
                   >
                     <Navigation className="h-4 w-4" />
                   </Button>
+                </div>
+                <div className="mt-2 text-xs text-gray-500 flex items-center gap-2">
+                  <MapPin className="h-3 w-3" />
+                  {formData.latitude.toFixed(4)}, {formData.longitude.toFixed(4)}
+                  {nearbyIncidents.length > 0 && (
+                    <Badge variant="outline" size="sm" className="ml-2 text-amber-600 border-amber-300">
+                      {nearbyIncidents.length} nearby reports
+                    </Badge>
+                  )}
                 </div>
               </div>
 
@@ -805,7 +984,13 @@ const handleSubmitReport = async () => {
               {/* Submit Button */}
               <Button 
                 type="button"
-                onClick={handleSubmitReport} 
+                onClick={() => {
+                  if (nearbyIncidents.length > 0) {
+                    setShowNearbyDialog(true)
+                  } else {
+                    handleSubmitReport()
+                  }
+                }} 
                 className="w-full py-6 text-lg font-bold bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 transition-all"
                 disabled={isAnalyzing}
               >
@@ -819,6 +1004,9 @@ const handleSubmitReport = async () => {
             </div>
           </Card>
         </div>
+        
+        {/* Nearby Incidents Dialog */}
+        <NearbyIncidentsDialog />
       </div>
     )
   }
@@ -903,7 +1091,6 @@ const handleSubmitReport = async () => {
               </button>
               <h2 className="text-2xl font-bold text-gray-900 mb-2">{selectedTicket.title}</h2>
               <p className="text-gray-600 mb-6">{selectedTicket.ticketNumber}</p>
-              <p className="text-gray-600 mb-6">Ticket #{selectedTicket.ticketNumber}</p>  // Changed here
               <AuditTimeline auditLogs={selectedTicket.audit || []} />
             </Card>
           </div>
