@@ -31,3 +31,7 @@ export const supabase = globalThis.supabaseGlobal || createSupabaseClient()
 if (process.env.NODE_ENV !== 'production') {
   globalThis.supabaseGlobal = supabase
 }
+
+export function getSupabase() {
+  return supabase
+}

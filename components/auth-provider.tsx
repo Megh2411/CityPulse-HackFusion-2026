@@ -1,10 +1,10 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getSupabase } from '@/lib/supabase'
 import { User, UserRole } from '@/lib/types'
 import { useRouter } from 'next/navigation'
-
+const supabase = getSupabase()
 interface AuthContextType {
   user: User | null
   loading: boolean
